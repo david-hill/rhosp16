@@ -92,6 +92,12 @@ parameters:
   MonitoringSubscriptionRabbitmq:
     default: 'overcloud-rabbitmq'
     type: string
+  DeployIdentifier:
+    default: ''
+    type: string
+    description: >
+      Setting this to a unique value will re-run any deployment tasks which
+      perform configuration on a Heat stack-update.
 
 conditions:
 
@@ -125,6 +131,8 @@ outputs:
             rabbitmq::delete_guest_user: false
             rabbitmq::wipe_db_on_cookie_change: true
             rabbitmq::port: 5672
+            rabbitmq::loopback_users: []
+            rabbitmq::tcp_backlog: 4096
             rabbitmq::package_provider: yum
             rabbitmq::package_source: undef
             rabbitmq::repos_ensure: false
@@ -146,7 +154,6 @@ outputs:
             rabbitmq_config_variables:
               cluster_partition_handling: 'ignore'
               queue_master_locator: '<<"min-masters">>'
-              loopback_users: '[]'
             rabbitmq::erlang_cookie:
               yaql:
                 expression: $.data.passwords.where($ != '').first()
@@ -287,6 +294,7 @@ outputs:
               KOLLA_BOOTSTRAP: true
               # NOTE: this should force this container to re-run on each
               # update (scale-out, etc.)
+              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
               RABBITMQ_CLUSTER_COOKIE:
                 yaql:
                   expression: $.data.passwords.where($ != '').first()

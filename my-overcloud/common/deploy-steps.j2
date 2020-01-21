@@ -203,6 +203,21 @@ parameters:
     default: {}
     type: json
     description: Map of extra data (hieradata) to set on each node.
+  UndercloudHostsEntries:
+    default: []
+    description: >
+      List of undercloud hosts entries to be appended to /etc/hosts. The
+      value is populated with the HEAT_HOSTS entries on the undercloud by
+      tripleoclient when running deploy.
+    type: comma_delimited_list
+  ExtraHostsEntries:
+    default: []
+    description: List of extra hosts entries to be appended to /etc/hosts
+    type: comma_delimited_list
+  VipHostsEntries:
+    default: []
+    description: List of VIP (virtual IP) hosts entries to be appended to /etc/hosts
+    type: comma_delimited_list
 
 conditions:
 {% for role in enabled_roles %}
@@ -371,6 +386,9 @@ outputs:
         enable_internal_tls: {get_param: EnableInternalTLS}
         cloud_domain: {get_param: CloudDomain}
         all_nodes_extra_map_data: {get_param: AllNodesExtraMapData}
+        undercloud_hosts_entries: {get_param: UndercloudHostsEntries}
+        extra_hosts_entries: {get_param: ExtraHostsEntries}
+        vip_hosts_entries: {get_param: VipHostsEntries}
       common_deploy_steps_tasks: {get_file: deploy-steps-tasks.yaml}
       deploy_steps_tasks_step_0: {get_file: deploy-steps-tasks-step-0.yaml}
       common_deploy_steps_tasks_step_1: {get_file: deploy-steps-tasks-step-1.yaml}
@@ -469,6 +487,8 @@ outputs:
               # named debug task for --start-at-task.
               pre_tasks:
                 - name: Common roles for TripleO servers
+                  delegate_to: localhost
+                  run_once: true
                   debug:
                     msg: Use --start-at-task "Common roles for TripleO servers" to resume from this task
               roles:
@@ -494,7 +514,7 @@ outputs:
                 docker_puppet_process_count: DOCKER_PUPPET_PROCESS_COUNT
                 docker_puppet_mount_host_puppet: DOCKER_PUPPET_MOUNT_HOST_PUPPET
               tasks:
-                - import_tasks: deploy_steps_tasks_step_0.yaml
+                - include_tasks: deploy_steps_tasks_step_0.yaml
               tags:
                 - overcloud
                 - deploy_steps
@@ -505,15 +525,18 @@ outputs:
               gather_facts: {{ '"{{' }} gather_facts | default(false) {{ '}}"' }}
               any_errors_fatal: yes
               tasks:
-                - name: Hiera config
-                  include_role:
-                    name: tripleo-hieradata
-                - name: Hiera symlink
-                  file:
-                    src: /etc/puppet/hiera.yaml
-                    dest: /etc/hiera.yaml
-                    state: link
-                    force: true
+                - name: Hiera configuration
+                  when: not ansible_check_mode|bool
+                  block:
+                    - name: Hiera config
+                      include_role:
+                        name: tripleo-hieradata
+                    - name: Hiera symlink
+                      file:
+                        src: /etc/puppet/hiera.yaml
+                        dest: /etc/hiera.yaml
+                        state: link
+                        force: true
               tags:
                 - overcloud
                 - pre_deploy_steps
@@ -523,6 +546,7 @@ outputs:
               gather_facts: {{ '"{{' }} gather_facts | default(false) {{ '}}"' }}
               tasks:
                 - name: Hieradata from vars
+                  when: not ansible_check_mode|bool
                   include_role:
                     name: tripleo-hieradata
                     tasks_from: hieradata_vars.yaml
@@ -548,6 +572,8 @@ outputs:
               any_errors_fatal: yes
               tasks:
                 - name: Server deployments
+                  delegate_to: localhost
+                  run_once: true
                   debug:
                     msg: Use --start-at-task "Server deployments" to resume from this task
                 - include_tasks: deployments.yaml
@@ -654,10 +680,15 @@ outputs:
                   environment:
                     artifact_urls: {{ '"{{' }} deploy_artifact_urls {{ '}}"' }}
 
-                - name: HostsConfig
-                  script: hosts-config.sh
-                  environment:
-                    HOSTS_ENTRY: {{ '"{{' }} hosts_entry {{ '}}"' }}
+                - name: Configure Hosts Entries
+                  include_role:
+                    name: tripleo-hosts-entries
+                  vars:
+                    tripleo_hosts_entries_undercloud_hosts_entries: {{ '"{{ ' }} undercloud_hosts_entries {{ ' }}"' }}
+                    tripleo_hosts_entries_extra_hosts_entries: {{ '"{{ ' }} extra_hosts_entries {{ ' }}"' }}
+                    tripleo_hosts_entries_vip_hosts_entries: {{ '"{{ ' }} vip_hosts_entries {{ ' }}"' }}
+                  tags:
+                    - tripleo_hosts_entries
 
               tags:
                 - overcloud
@@ -681,6 +712,8 @@ outputs:
                 docker_puppet_mount_host_puppet: DOCKER_PUPPET_MOUNT_HOST_PUPPET
               tasks:
                 - name: {{role.name}} Host prep steps
+                  delegate_to: localhost
+                  run_once: true
                   debug:
                     msg: Use --start-at-task "{{role.name}} Host prep steps" to resume from this task
                 - import_tasks: {{role.name}}/host_prep_tasks.yaml
@@ -710,6 +743,8 @@ outputs:
                 docker_puppet_mount_host_puppet: DOCKER_PUPPET_MOUNT_HOST_PUPPET
               tasks:
                 - name: External deployment step {{step}}
+                  delegate_to: localhost
+                  run_once: true
                   debug:
                     msg: Use --start-at-task "External deployment step {{step}}" to resume from this task
                 - import_tasks: external_deploy_steps_tasks.yaml
@@ -745,11 +780,22 @@ outputs:
                     force: true
                     mode: '0600'
                 - name: Overcloud deploy step tasks for {{step}}
+                  delegate_to: localhost
+                  run_once: true
                   debug:
                     msg: Use --start-at-task "Overcloud deploy step tasks for {{step}}" to resume from this task
 {%- for role in roles %}
-                - import_tasks: {{role.name}}/deploy_steps_tasks.yaml
-                  when: tripleo_role_name == '{{role.name}}'
+                - name: Check for {{role.name}}/deploy_steps_tasks_step{{step}}.yaml
+                  delegate_to: localhost
+                  become: false
+                  run_once: true
+                  stat:
+                    path: "{{ '{{' }} playbook_dir ~ '/' ~ '{{role.name}}' ~ '/' ~ 'deploy_steps_tasks_step{{step}}.yaml' {{ '}}' }}"
+                  register: tasks_stat
+                - include_tasks: {{role.name}}/deploy_steps_tasks_step{{step}}.yaml
+                  when:
+                    - tripleo_role_name == '{{role.name}}'
+                    - tasks_stat.stat.exists
 {%- endfor %}
               tags:
                 - overcloud
@@ -805,13 +851,15 @@ outputs:
                 docker_puppet_mount_host_puppet: DOCKER_PUPPET_MOUNT_HOST_PUPPET
               tasks:
                 - name: Overcloud common deploy step tasks {{step}}
+                  delegate_to: localhost
+                  run_once: true
                   debug:
                     msg: Use --start-at-task "Overcloud common deploy step tasks {{step}}" to resume from this task
                 - name: Check if /var/lib/tripleo-config/container-startup-config-1.json already exists
                   stat:
                     path: /var/lib/tripleo-config/container-startup-config-1.json
                   register: container_startup_configs_json_stat
-                - import_tasks: common_deploy_steps_tasks.yaml
+                - include_tasks: common_deploy_steps_tasks.yaml
                   when: (deploy_identifier is defined and deploy_identifier != "" and deploy_identifier is not none) or
                         (container_startup_configs_json_stat is defined and not container_startup_configs_json_stat.stat.exists)
               tags:
@@ -826,6 +874,8 @@ outputs:
               any_errors_fatal: yes
               tasks:
                 - name: Server Post Deployments
+                  delegate_to: localhost
+                  run_once: true
                   debug:
                     msg: Use --start-at-task "Server Post Deployments" to resume from this task
                 - include_tasks: deployments.yaml
@@ -854,6 +904,8 @@ outputs:
                 docker_puppet_mount_host_puppet: DOCKER_PUPPET_MOUNT_HOST_PUPPET
               tasks:
                 - name: External deployment Post Deploy tasks
+                  delegate_to: localhost
+                  run_once: true
                   debug:
                     msg: Use --start-at-task "External deployment Post Deploy tasks" to resume from this task
                 - import_tasks: external_post_deploy_steps_tasks.yaml
