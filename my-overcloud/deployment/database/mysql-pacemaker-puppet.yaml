@@ -359,19 +359,6 @@ outputs:
                 container_image_latest: "{{galera_image_latest}}"
               when:
                 - old_galera_image_id.stdout != new_galera_image_id.stdout
-            - block:
-                - name: Get a list of container using galera image
-                  shell: "{{container_cli}} ps -a -q -f 'ancestor={{old_galera_image_id.stdout}}'"
-                  register: galera_containers_to_destroy
-                # It will be recreated with the delpoy step.
-                - name: Remove any container using the same galera image
-                  shell: "{{container_cli}} rm -fv {{item}}"
-                  with_items: "{{ galera_containers_to_destroy.stdout_lines }}"
-                - name: Remove previous galera images
-                  shell: "{{container_cli}} rmi -f {{old_galera_image_id.stdout}}"
-              when:
-                - old_galera_image_id.stdout != ''
-                - old_galera_image_id.stdout != new_galera_image_id.stdout
 
       upgrade_tasks:
         - vars:
@@ -503,9 +490,6 @@ outputs:
                 - groups['mysql'] | length > 1
                 - item.split('.')[0] in ansible_limit.split(',')
               loop: "{{ mysql_node_names }}"
-
-            - debug:
-                msg: "Prepare galera upgrade for {{ mysql_short_node_names_upgraded }}"
             - fail:
                 msg: >
                   You can't upgrade galera without staged upgrade.
@@ -515,13 +499,16 @@ outputs:
                 mysql_short_node_names_upgraded | length == 0 or
                 mysql_node_names_upgraded is not defined or
                 mysql_node_names_upgraded | length == 0
-
+            - debug:
+                msg: "Prepare galera upgrade for {{ mysql_short_node_names_upgraded }}"
             - name: remove mysql init container on upgrade-scaleup to force re-init
-              shell: |
-                if podman inspect mysql_init_bundle &> /dev/null; then
-                    podman rm mysql_init_bundle
-                fi
-              when: mysql_short_node_names_upgraded | length > 1
+              include_role:
+                name: tripleo-container-rm
+              vars:
+                tripleo_containers_to_rm:
+                  - mysql_init_bundle
+              when:
+                - mysql_short_node_names_upgraded | length > 1
             - name: add the mysql short name to hiera data for the upgrade.
               include_role:
                 name: tripleo-upgrade-hiera
@@ -629,7 +616,7 @@ outputs:
       fast_forward_upgrade_tasks:
         - when:
             - step|int == 6
-            - release == 'ocata'
+            - release == 'rocky'
             - is_bootstrap_node|bool
           block:
             - name: Remove whitespaces in .my.cnf

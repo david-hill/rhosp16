@@ -85,6 +85,12 @@ parameters:
     description: Mapping of service endpoint -> protocol. Typically set
                  via parameter_defaults in the resource registry.
     type: json
+  DeployIdentifier:
+    default: ''
+    type: string
+    description: >
+      Setting this to a unique value will re-run any deployment tasks which
+      perform configuration on a Heat stack-update.
   NeutronL3AgentMode:
     description: |
       Agent mode for L3 agent. Must be one of legacy or dvr_snat.
@@ -316,6 +322,8 @@ outputs:
                 -
                   - /run/openvswitch:/run/openvswitch:shared,z
                   - /var/lib/neutron:/var/lib/neutron:shared,z
+            environment:
+              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
         step_4:
           neutron_l3_agent:
             start_order: 10
@@ -325,7 +333,7 @@ outputs:
             privileged: true
             restart: always
             depends_on:
-              - openvswitch
+              - openvswitch.service
             healthcheck: {get_attr: [ContainersCommon, healthcheck_rpc_port]}
             ulimit: {get_param: DockerNeutronL3AgentUlimit}
             volumes:
@@ -394,7 +402,7 @@ outputs:
       fast_forward_upgrade_tasks:
         - when:
             - step|int == 0
-            - release == 'ocata'
+            - release == 'rocky'
           block:
             - name: Check if neutron_l3_agent is deployed
               command: systemctl is-enabled --quiet neutron-l3-agent
@@ -407,7 +415,7 @@ outputs:
           service: name=neutron-l3-agent state=stopped enabled=no
           when:
             - step|int == 1
-            - release == 'ocata'
+            - release == 'rocky'
             - neutron_l3_agent_enabled|bool
       post_upgrade_tasks:
         - name: Check for neutron user

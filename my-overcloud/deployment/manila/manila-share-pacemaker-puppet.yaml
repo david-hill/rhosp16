@@ -248,19 +248,6 @@ outputs:
                 container_image_latest: "{{manila_share_image_latest}}"
               when:
                 - old_manila_share_image_id.stdout != new_manila_share_image_id.stdout
-            - block:
-                - name: Get a list of containers using manila_share image
-                  shell: "{{container_cli}} ps -a -q -f 'ancestor={{old_manila_share_image_id.stdout}}'"
-                  register: manila_share_containers_to_destroy
-                # It will be recreated with the delpoy step.
-                - name: Remove any containers using the same manila_share image
-                  shell: "{{container_cli}} rm -fv {{item}}"
-                  with_items: "{{ manila_share_containers_to_destroy.stdout_lines }}"
-                - name: Remove previous manila_share images
-                  shell: "{{container_cli}} rmi -f {{manila_share_image_id.stdout}}"
-              when:
-                - old_manila_share_image_id.stdout != ''
-                - old_manila_share_image_id.stdout != new_manila_share_image_id.stdout
 
       upgrade_tasks:
         - name: Prepare switch of manila_share image name
@@ -326,6 +313,69 @@ outputs:
               register: output
               retries: 5
               until: output.rc == 0
+        - name: Create hiera data to upgrade manila_share in a stepwise manner.
+          when:
+            - step|int == 1
+          block:
+            - name: set manila_share upgrade node facts in a single-node environment
+              set_fact:
+                manila_share_short_node_names_upgraded: "{{ manila_share_short_node_names }}"
+                manila_share_node_names_upgraded: "{{ manila_share_node_names }}"
+                cacheable: no
+              when: groups['manila_share'] | length <= 1
+            - name: set manila_share upgrade node facts from the limit option
+              set_fact:
+                manila_share_short_node_names_upgraded: "{{ manila_share_short_node_names_upgraded|default([]) + [item.split('.')[0]] }}"
+                manila_share_node_names_upgraded: "{{ manila_share_node_names_upgraded|default([]) + [item] }}"
+                cacheable: no
+              when:
+                - groups['manila_share'] | length > 1
+                - item.split('.')[0] in ansible_limit.split(',')
+              loop: "{{ manila_share_node_names }}"
+            - fail:
+                msg: >
+                  You can't upgrade manila_share without
+                  staged upgrade.  You need to use the limit option in order
+                  to do so.
+              when: >-
+                manila_share_short_node_names_upgraded is not defined or
+                manila_share_short_node_names_upgraded | length == 0 or
+                manila_share_node_names_upgraded is not defined or
+                manila_share_node_names_upgraded | length == 0
+            - debug:
+                msg: "Prepare manila_share upgrade for {{ manila_share_short_node_names_upgraded }}"
+            - name: remove manila_share init container on upgrade-scaleup to force re-init
+              include_role:
+                name: tripleo-container-rm
+              vars:
+                tripleo_containers_to_rm:
+                  - manila_share_init_bundle
+              when:
+                - manila_share_short_node_names_upgraded | length > 1
+            - name: add the manila_share short name to hiera data for the upgrade.
+              include_role:
+                name: tripleo-upgrade-hiera
+                tasks_from: set.yml
+              vars:
+                tripleo_upgrade_key: manila_share_short_node_names_override
+                tripleo_upgrade_value: "{{ manila_share_short_node_names_upgraded }}"
+            - name: add the manila_share long name to hiera data for the upgrade
+              include_role:
+                name: tripleo-upgrade-hiera
+                tasks_from: set.yml
+              vars:
+                tripleo_upgrade_key: manila_share_node_names_override
+                tripleo_upgrade_value: "{{ manila_share_node_names_upgraded }}"
+            - name: remove the extra hiera data needed for the upgrade.
+              include_role:
+                name: tripleo-upgrade-hiera
+                tasks_from: remove.yml
+              vars:
+                tripleo_upgrade_key: "{{ item }}"
+              loop:
+                - manila_share_short_node_names_override
+                - manila_share_node_names_override
+              when: manila_share_short_node_names_upgraded | length == manila_share_node_names | length
         - name: Retag the pacemaker image if containerized
           when:
             - step|int == 3
@@ -341,14 +391,14 @@ outputs:
           register: manila_share_res_result
           when:
             - step|int == 0
-            - release == 'ocata'
+            - release == 'rocky'
             - is_bootstrap_node|bool
         - name: Set fact manila_share_res
           set_fact:
             manila_share_res: "{{ manila_share_res_result.rc == 0 }}"
           when:
             - step|int == 0
-            - release == 'ocata'
+            - release == 'rocky'
             - is_bootstrap_node|bool
         - name: Disable the openstack-manila-share cluster resource
           pacemaker_resource:
@@ -360,6 +410,6 @@ outputs:
           until: manila_share_output.rc == 0
           when:
             - step|int == 2
-            - release == 'ocata'
+            - release == 'rocky'
             - is_bootstrap_node|bool
             - manila_share_res|bool

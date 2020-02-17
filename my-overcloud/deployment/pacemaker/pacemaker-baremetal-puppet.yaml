@@ -163,6 +163,12 @@ outputs:
                   - {get_param: PcsdPassword}
                   - {get_param: [DefaultPasswords, pcsd_password]}
           tripleo::profile::base::pacemaker::remote_authkey: {get_param: PacemakerRemoteAuthkey}
+          tripleo::profile::base::pacemaker::pcsd_bind_addr:
+            str_replace:
+              template:
+                "%{hiera('$NETWORK')}"
+              params:
+                $NETWORK: {get_param: [ServiceNetMap, PacemakerNetwork]}
         -
           if:
           - pcmk_tls_priorities_empty
@@ -217,9 +223,6 @@ outputs:
                 - groups['pacemaker'] | length > 1
                 - item.split('.')[0] in ansible_limit.split(',')
               loop: "{{ pacemaker_short_node_names }}"
-
-            - debug:
-                msg: "Prepare pacemaker upgrade for {{ pacemaker_short_node_names_upgraded }}"
             - fail:
                 msg: >
                   You can't upgrade pacemaker without staged
@@ -228,6 +231,8 @@ outputs:
               when: >-
                 pacemaker_short_node_names_upgraded is not defined or
                 pacemaker_short_node_names_upgraded | length == 0
+            - debug:
+                msg: "Prepare pacemaker upgrade for {{ pacemaker_short_node_names_upgraded }}"
             - name: set pacemaker node ips fact from the names fact
               set_fact:
                 # Generate matching IPs for the names, e.g. for these varaible values:
@@ -328,6 +333,17 @@ outputs:
                     echo "Could not retrieve and clear location constraint for VIP $v" 2>&1
                 fi
             done
+        - name: Set the cluster bundle timeout
+          when: step|int == 1
+          vars:
+            pacemaker_bundle_operation_timeout: {get_param: PacemakerBundleOperationTimeout}
+            container_cli: {get_param: ContainerCli}
+          block:
+            - name: Change the bundle operation timeout
+              command: "pcs resource op defaults timeout={{ pacemaker_bundle_operation_timeout|ternary(pacemaker_bundle_operation_timeout,'120s') }}"
+              when:
+                - "container_cli == 'podman'"
+
         - name: Stop pacemaker cluster
           when: step|int == 1
           pacemaker_cluster: state=offline

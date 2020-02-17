@@ -178,6 +178,7 @@ resource_registry:
   OS::TripleO::Services::OsloMessagingRpc: deployment/rabbitmq/rabbitmq-messaging-rpc-container-puppet.yaml
   OS::TripleO::Services::OsloMessagingNotify: deployment/rabbitmq/rabbitmq-messaging-notify-shared-puppet.yaml
   OS::TripleO::Services::RabbitMQ: OS::Heat::None
+  OS::TripleO::Services::Rear: OS::Heat::None
   OS::TripleO::Services::Qdr: OS::Heat::None
   OS::TripleO::Services::HAproxy: deployment/haproxy/haproxy-container-puppet.yaml
   OS::TripleO::Services::HAProxyPublicTLS: deployment/haproxy/haproxy-public-tls-inject.yaml
@@ -260,6 +261,7 @@ resource_registry:
   OS::TripleO::Services::AodhEvaluator: OS::Heat::None
   OS::TripleO::Services::AodhListener: OS::Heat::None
   OS::TripleO::Services::AodhNotifier: OS::Heat::None
+  OS::TripleO::Services::PankoApi: OS::Heat::None
   OS::TripleO::Services::MetricsQdr: OS::Heat::None
   OS::TripleO::Services::MistralEngine: OS::Heat::None
   OS::TripleO::Services::MistralApi: OS::Heat::None
@@ -327,6 +329,8 @@ resource_registry:
   # see https://review.opendev.org/#/c/563443
   OS::TripleO::Docker::NeutronMl2PluginBase: deployment/neutron/neutron-plugin-ml2-ovn.yaml
   OS::TripleO::Services::Multipathd: OS::Heat::None
+  OS::TripleO::Services::GlanceApiEdge: OS::Heat::None
+  OS::TripleO::Services::HAproxyEdge: OS::Heat::None
 
   # Logging
   OS::TripleO::Services::Tmpwatch: deployment/logrotate/tmpwatch-install.yaml
@@ -343,6 +347,7 @@ resource_registry:
   OS::TripleO::Services::Logging::NovaMetadata: deployment/logging/files/nova-metadata.yaml
   OS::TripleO::Services::Logging::NovaCommon: deployment/logging/files/nova-common.yaml
   OS::TripleO::Services::Logging::NovaLibvirt: deployment/logging/files/nova-libvirt.yaml
+  OS::TripleO::Services::Logging::PankoApi: deployment/logging/files/panko-api.yaml
   OS::TripleO::Services::Logging::PlacementApi: deployment/logging/files/placement-api.yaml
 
   # Tempest

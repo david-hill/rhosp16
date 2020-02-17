@@ -325,7 +325,7 @@ resources:
           rgw_keystone_api_version: 3
           rgw_keystone_url: {get_param: [EndpointMap, KeystoneInternal, uri_no_suffix]}
           rgw_keystone_accepted_roles: 'member, Member, admin'
-          rgw_keystone_accepted_admin_roles: ResellerAdmin
+          rgw_keystone_accepted_admin_roles: ResellerAdmin, swiftoperator
           rgw_keystone_admin_domain: default
           rgw_keystone_admin_project: service
           rgw_keystone_admin_user: swift
@@ -545,6 +545,17 @@ outputs:
               tags:
                 - opendev-validation
                 - opendev-validation-ceph
+            - name: Check if Ceph dependencies are installed
+              import_role:
+                role: ceph
+                tasks_from: ceph-dependencies-installed
+              tags:
+              - opendev-validation
+              - opendev-validation-ceph
+              vars:
+                fail_without_deps: true
+                packages: lvm2
+                tripleo_delegate_to: "{{ groups['overcloud'] | default([]) }}"
             - name: set ceph-ansible facts
               set_fact:
                 blacklisted_hostnames: {get_param: DeploymentServerBlacklist}
@@ -622,7 +633,9 @@ outputs:
                 ceph_ansible_playbooks_default: ["/usr/share/ceph-ansible/infrastructure-playbooks/rolling_update.yml"]
       external_upgrade_tasks:
         - when: step|int == 0
-          tags: ceph-systemd
+          tags:
+            - never
+            - ceph_systemd
           block:
             - name: stop if _limit is unset
               fail:

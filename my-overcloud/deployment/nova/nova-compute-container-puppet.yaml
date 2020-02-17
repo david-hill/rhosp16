@@ -775,7 +775,7 @@ outputs:
                 user: nova
                 restart: always
                 depends_on:
-                  - tripleo_nova_libvirt
+                  - tripleo_nova_libvirt.service
                 healthcheck: {get_attr: [ContainersCommon, healthcheck_rpc_port]}
                 volumes:
                   list_concat:
@@ -794,6 +794,7 @@ outputs:
                       - /var/lib/libvirt:/var/lib/libvirt:shared,z
                       - /sys/class/net:/sys/class/net
                       - /sys/bus/pci:/sys/bus/pci
+                      - /boot:/boot:ro
                     -
                       # podman fails to relable if nova_nfs_enabled where we have
                       # the nfs share mounted to /var/lib/nova/instances
@@ -811,6 +812,7 @@ outputs:
                   map_merge:
                     - {get_param: NovaComputeOptEnvVars}
                     - KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
+                    - LIBGUESTFS_BACKEND: libvirt:qemu:///system
             - if:
                 - is_not_additional_cell
                 - nova_wait_for_compute_service:
@@ -1088,6 +1090,9 @@ outputs:
               delegate_to: localhost
               check_mode: no
               changed_when: false
+            - name: is additional Cell?
+              set_fact:
+                is_additional_cell: {get_param: NovaAdditionalCell}
             - name: Set fact for nova_compute services
               set_fact:
                 nova_compute_service: "{{ nova_compute_service_result.stdout | from_yaml | selectattr('Host', 'match', ansible_fqdn ~ '.*') | list }}"
@@ -1104,34 +1109,36 @@ outputs:
                   -> {{ nova_compute_service }}.
               when:
                 - (nova_compute_service | length) > 1
-            - name: Disable nova-compute service
-              command: openstack compute service set {{ nova_compute_service[0].Host }} nova-compute --disable
-              delegate_to: localhost
-              check_mode: no
+            - name: Disable nova services
               when:
-                - (nova_compute_service | length) <= 1
-            - name: Stop nova-compute healthcheck container
-              service:
-                name: tripleo_nova_compute_healthcheck
-                state: stopped
-                enabled: no
-              become: true
-            - name: Stop nova-compute container
-              service:
-                name: tripleo_nova_compute
-                state: stopped
-                enabled: no
-              become: true
-            - name: Delete nova-compute service
-              command: openstack compute service delete {{ nova_compute_service[0].ID }}
-              delegate_to: localhost
-              check_mode: no
-              when:
-                - (nova_compute_service | length) <= 1
+                - (nova_compute_service | length) == 1
+              block:
+                - name: Disable nova-compute service
+                  command: openstack compute service set {{ nova_compute_service[0].Host }} nova-compute --disable
+                  delegate_to: localhost
+                  check_mode: no
+                  when:
+                    - not is_additional_cell|bool
+                - name: Stop nova-compute healthcheck container
+                  service:
+                    name: tripleo_nova_compute_healthcheck
+                    state: stopped
+                    enabled: no
+                  become: true
+                - name: Stop nova-compute container
+                  service:
+                    name: tripleo_nova_compute
+                    state: stopped
+                    enabled: no
+                  become: true
+                - name: Delete nova-compute service
+                  command: openstack compute service delete {{ nova_compute_service[0].ID }}
+                  delegate_to: localhost
+                  check_mode: no
       fast_forward_upgrade_tasks:
         - when:
             - step|int == 0
-            - release == 'ocata'
+            - release == 'rocky'
           block:
             - name: Check if nova-compute is deployed
               command:  systemctl is-enabled --quiet openstack-nova-compute
@@ -1142,7 +1149,7 @@ outputs:
                 nova_compute_enabled: "{{ nova_compute_enabled_result.rc == 0 }}"
         - when:
             - step|int == 1
-            - release == 'ocata'
+            - release == 'rocky'
           block:
             - name: Stop and disable nova-compute service
               service: name=openstack-nova-compute state=stopped

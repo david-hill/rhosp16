@@ -36,6 +36,12 @@ parameters:
     default: {}
     description: Parameters specific to the role
     type: json
+  DeployIdentifier:
+    default: ''
+    type: string
+    description: >
+      Setting this to a unique value will re-run any deployment tasks which
+      perform configuration on a Heat stack-update.
   EnableInternalTLS:
     type: boolean
     default: false
@@ -186,6 +192,8 @@ outputs:
                   - /var/log/containers/aodh:/var/log/aodh
                   - /var/log/containers/httpd/aodh-api:/var/log/httpd
             command: "/usr/bin/bootstrap_host_exec aodh_api su aodh -s /bin/bash -c /usr/bin/aodh-dbsync"
+            environment:
+              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
         step_4:
           aodh_api:
             image: *aodh_api_image
@@ -251,7 +259,7 @@ outputs:
       fast_forward_upgrade_tasks:
         - when:
             - step|int == 0
-            - release == 'ocata'
+            - release == 'rocky'
           block:
             - name: Check for aodh running under apache
               tags: common
@@ -276,7 +284,7 @@ outputs:
           service: name=httpd state=stopped enabled=no
           when:
             - step|int == 1
-            - release == 'ocata'
+            - release == 'rocky'
             - aodh_httpd_enabled|bool
             - httpd_running|bool
         - name: Aodh package update

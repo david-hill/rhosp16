@@ -41,6 +41,12 @@ parameters:
     default: {}
     description: Parameters specific to the role
     type: json
+  DeployIdentifier:
+    default: ''
+    type: string
+    description: >
+      Setting this to a unique value will re-run any deployment tasks which
+      perform configuration on a Heat stack-update.
   EnableInternalTLS:
     type: boolean
     default: false
@@ -271,6 +277,8 @@ outputs:
               - '/usr/bin/bootstrap_host_exec'
               - 'cinder_api'
               - "su cinder -s /bin/bash -c 'cinder-manage db sync --bump-versions'"
+            environment:
+              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
         step_4:
           cinder_api:
             image: *cinder_api_image
@@ -378,7 +386,7 @@ outputs:
       fast_forward_upgrade_tasks:
         - when:
             - step|int == 0
-            - release == 'ocata'
+            - release == 'rocky'
           block:
             - name: Check is cinder_api is deployed
               command: systemctl is-enabled --quiet openstack-cinder-api
@@ -391,7 +399,7 @@ outputs:
           service: name=openstack-cinder-api state=stopped
           when:
             - step|int == 1
-            - release == 'ocata'
+            - release == 'rocky'
             - cinder_api_enabled|bool
         - name: Extra removal of services for cinder
           shell: |
@@ -401,13 +409,13 @@ outputs:
             while read i ; do cinder-manage service remove $i ; done
           when:
             - step|int == 5
-            - release == 'pike'
+            - release == 'stein'
             - is_bootstrap_node|bool
         - name: Extra migration for cinder
           command: cinder-manage db online_data_migrations
           when:
             - step|int == 5
-            - release == 'pike'
+            - release == 'stein'
             - is_bootstrap_node|bool
         - name: Cinder package update
           package:

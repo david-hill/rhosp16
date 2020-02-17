@@ -603,7 +603,7 @@ outputs:
                   - /var/lib/kolla/config_files/collectd.json:/var/lib/kolla/config_files/config.json:ro
                   - /var/lib/config-data/puppet-generated/collectd/:/var/lib/kolla/config_files/src:ro
                   - /var/log/containers/collectd:/var/log/collectd:rw,z
-                  - /var/run/:/var/run:rw,z
+                  - /var/run/:/var/run:rw
                   - /var/log/journal:/var/log/journal:ro
                   - /sys/fs/cgroup:/sys/fs/cgroup:ro
                   - /usr/lib/systemd/system:/usr/lib/systemd/system:ro
@@ -666,7 +666,7 @@ outputs:
       fast_forward_upgrade_tasks:
         - when:
             - step|int == 0
-            - release == 'ocata'
+            - release == 'rocky'
           block:
             - name: Check if collectd.service is deployed
               command: systemctl is-enabled --quiet collectd.service
@@ -679,5 +679,5 @@ outputs:
           service: name=collectd.service state=stopped enabled=no
           when:
             - step|int == 1
-            - release == 'ocata'
+            - release == 'rocky'
             - collectd_enabled|bool

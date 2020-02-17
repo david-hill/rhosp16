@@ -338,19 +338,6 @@ outputs:
                 container_image_latest: "{{redis_image_latest}}"
               when:
                 - old_redis_image_id.stdout != new_redis_image_id.stdout
-            - block:
-                - name: Get a list of containers using redis image
-                  shell: "{{container_cli}} ps -a -q -f 'ancestor={{old_redis_image_id.stdout}}'"
-                  register: redis_containers_to_destroy
-                # It will be recreated with the delpoy step.
-                - name: Remove any containers using the same redis image
-                  shell: "{{container_cli}} rm -fv {{item}}"
-                  with_items: "{{ redis_containers_to_destroy.stdout_lines }}"
-                - name: Remove previous redis images
-                  shell: "{{container_cli}} rmi -f {{old_redis_image_id.stdout}}"
-              when:
-                - old_redis_image_id.stdout != ''
-                - old_redis_image_id.stdout != new_redis_image_id.stdout
 
       upgrade_tasks:
         - name: Prepare switch of redis image name
@@ -436,9 +423,6 @@ outputs:
                 - groups['redis'] | length > 1
                 - item.split('.')[0] in ansible_limit.split(',')
               loop: "{{ redis_short_node_names }}"
-
-            - debug:
-                msg: "Prepare redis upgrade for {{ redis_short_node_names_upgraded }}"
             - fail:
                 msg: >
                   You can't upgrade redis without staged
@@ -447,13 +431,16 @@ outputs:
               when: >-
                 redis_short_node_names_upgraded is not defined or
                 redis_short_node_names_upgraded | length == 0
-
+            - debug:
+                msg: "Prepare redis upgrade for {{ redis_short_node_names_upgraded }}"
             - name: remove redis init container on upgrade-scaleup to force re-init
-              shell: |
-                if podman inspect redis_init_bundle &> /dev/null; then
-                    podman rm redis_init_bundle
-                fi
-              when: redis_short_node_names_upgraded | length > 1
+              include_role:
+                name: tripleo-container-rm
+              vars:
+                tripleo_containers_to_rm:
+                  - redis_init_bundle
+              when:
+                - redis_short_node_names_upgraded | length > 1
             - name: add the redis short name to hiera data for the upgrade.
               include_role:
                 name: tripleo-upgrade-hiera
@@ -476,7 +463,7 @@ outputs:
       fast_forward_upgrade_tasks:
         - when:
             - step|int == 0
-            - release == 'ocata'
+            - release == 'rocky'
             - is_bootstrap_node|bool
           block:
             - name: Check cluster resource status of redis
@@ -499,6 +486,6 @@ outputs:
           until: redis_output.rc == 0
           when:
             - step|int == 2
-            - release == 'ocata'
+            - release == 'rocky'
             - is_bootstrap_node|bool
             - redis_res|bool
