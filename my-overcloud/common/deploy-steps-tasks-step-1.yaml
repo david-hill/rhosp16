@@ -248,7 +248,23 @@
           tags:
             - container_startup_configs
 
-        - name: Write per-step container startup configs
+        # This file location is deprecated and the new location is now:
+        # /var/lib/tripleo-config/container-startup-config/step_X/<container_name>.json
+        # Can be removed in V cycle
+        - name: Write /var/lib/tripleo-config/container-startup-config-readme.txt
+          no_log: True
+          copy:
+            content: "Container startup configs moved to /var/lib/tripleo-config/container-startup-config"
+            dest: /var/lib/tripleo-config/container-startup-config-readme.txt
+            force: yes
+            mode: '0600'
+          tags:
+            - container_startup_configs
+
+        # For backward compatibility, the files are still generated.
+        # However, container_puppet.py won't create their hashed version if
+        # config changed.
+        - name: Write per-step container startup configs for backward compatibility
           no_log: True
           copy:
             content: "{{ item[1] | to_nice_json }}"
@@ -258,6 +274,13 @@
           loop: "{{ container_config_with_default | dictsort }}"
           loop_control:
             label: "{{ item[0] }}"
+          tags:
+            - container_startup_configs
+
+        - name: Generate startup configs files per step and per container
+          no_log: True
+          include_tasks: container_startup_configs_tasks.yaml
+          loop: "{{ container_config_with_default | dictsort }}"
           tags:
             - container_startup_configs
 
@@ -291,3 +314,64 @@
             label: "{{ item[0] }}"
           tags:
             - container_startup_configs
+
+        - name: gather facts needed by role
+          setup:
+            gather_subset: "!min,python"
+          when: ansible_python is not defined
+          tags:
+            - container_config_tasks
+
+        - name: set python_cmd
+          set_fact:
+            python_cmd: "python{{ ansible_python.version.major }}"
+            cacheable: true
+          when: python_cmd is not defined
+          tags:
+            - container_config_tasks
+
+        - name: Set host puppet debugging fact string
+          set_fact:
+            host_puppet_config_debug: "--debug --verbose"
+          when:
+            - enable_puppet | bool
+            - enable_debug | bool
+          tags:
+            - host_config
+
+        - name: Check for /etc/puppet/check-mode directory for check mode
+          stat:
+            path: /etc/puppet/check-mode
+          register: check_mode_dir
+          when: ansible_check_mode|bool
+          tags:
+            - host_config
+            - container_config
+
+        - name: Create /etc/puppet/check-mode/hieradata directory for check mode
+          file:
+            path: /etc/puppet/check-mode/hieradata
+            state: directory
+            setype: svirt_sandbox_file_t
+            selevel: s0
+            recurse: true
+          check_mode: no
+          when:
+            - ansible_check_mode|bool
+            - not check_mode_dir.stat.exists
+          tags:
+            - host_config
+            - container_config
+
+        - name: Create puppet check-mode files if they don't exist for check mode
+          shell: |
+            cp -a /etc/puppet/hiera.yaml /etc/puppet/check-mode/hiera.yaml
+            cp -a /etc/puppet/hieradata/* /etc/puppet/check-mode/hieradata/
+            sed -i 's/\/etc\/puppet\/hieradata/\/etc\/puppet\/check-mode\/hieradata/' /etc/puppet/check-mode/hiera.yaml
+          when:
+            - ansible_check_mode|bool
+            - not check_mode_dir.stat.exists
+          check_mode: no
+          tags:
+            - host_config
+            - container_config

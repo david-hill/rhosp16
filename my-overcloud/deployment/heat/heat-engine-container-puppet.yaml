@@ -41,6 +41,12 @@ parameters:
     default: {}
     description: Parameters specific to the role
     type: json
+  DeployIdentifier:
+    default: ''
+    type: string
+    description: >
+      Setting this to a unique value will re-run any deployment tasks which
+      perform configuration on a Heat stack-update.
   HeatEngineOptVolumes:
     default: []
     description: list of optional volumes to be mounted
@@ -244,6 +250,8 @@ outputs:
                   - /var/lib/config-data/heat/etc/my.cnf.d/tripleo.cnf:/etc/my.cnf.d/tripleo.cnf:ro
                   - /var/lib/config-data/heat/etc/heat/:/etc/heat/:ro
             command: "/usr/bin/bootstrap_host_exec heat_engine su heat -s /bin/bash -c 'heat-manage db_sync'"
+            environment:
+              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
         step_4:
           heat_engine:
             image: *heat_engine_image
@@ -291,7 +299,7 @@ outputs:
       fast_forward_upgrade_tasks:
         - when:
             - step|int == 0
-            - release == 'ocata'
+            - release == 'rocky'
           block:
             - name: FFU check if openstack-heat-engine is enabled
               command: systemctl is-enabled --quiet openstack-heat-engine
@@ -303,6 +311,6 @@ outputs:
         - name: FFU stop and disable openstack-heat-engine service
           when:
             - step|int == 1
-            - release == 'ocata'
+            - release == 'rocky'
             - heat_engine_enabled|bool
           service: name=openstack-heat-engine state=stopped enabled=no

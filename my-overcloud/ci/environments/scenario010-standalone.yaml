@@ -72,6 +72,7 @@ parameter_defaults:
     DEFAULT_FORKS: '3'
   NovaEnableRbdBackend: true
   CinderEnableRbdBackend: true
+  CephAnsibleRepo: "rhceph-4-tools-for-rhel-8-x86_64-rpms"
   CinderBackupBackend: ceph
   GlanceBackend: rbd
   CinderEnableIscsiBackend: false

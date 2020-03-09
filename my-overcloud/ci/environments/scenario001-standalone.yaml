@@ -11,6 +11,7 @@ resource_registry:
   OS::TripleO::Services::CephOSD: ../../deployment/ceph-ansible/ceph-osd.yaml
   OS::TripleO::Services::CephGrafana: ../../deployment/ceph-ansible/ceph-grafana.yaml
   OS::TripleO::Services::CephClient: ../../deployment/ceph-ansible/ceph-client.yaml
+  OS::TripleO::Services::PankoApi: ../../deployment/deprecated/panko/panko-api-container-puppet.yaml
   OS::TripleO::Services::Collectd: ../../deployment/metrics/collectd-container-puppet.yaml
   OS::TripleO::Services::GnocchiApi: ../../deployment/gnocchi/gnocchi-api-container-puppet.yaml
   OS::TripleO::Services::GnocchiMetricd: ../../deployment/gnocchi/gnocchi-metricd-container-puppet.yaml
@@ -52,6 +53,7 @@ parameter_defaults:
     - gnocchi://?archive_policy=ceilometer-high-rate
   EventPipelinePublishers:
     - gnocchi://?archive_policy=ceilometer-high-rate
+    - panko://
 
 
   Debug: true
@@ -69,8 +71,8 @@ parameter_defaults:
         wal_vg: ceph_vg
   CephPoolDefaultPgNum: 32
   CephPoolDefaultSize: 1
-  # disable dashboard until launchpad tripleo/+bug/1849274
-  CephEnableDashboard: false
+  CephEnableDashboard: true
+  CephAnsibleRepo: "rhceph-4-tools-for-rhel-8-x86_64-rpms"
   CephAnsibleExtraConfig:
     centos_package_dependencies: []
     ceph_osd_docker_memory_limit: '1g'
@@ -85,6 +87,14 @@ parameter_defaults:
   CephMonKey: 'AQC+Ox1VmEr3BxAALZejqeHj50Nj6wJDvs96OQ=='
   CephAdminKey: 'AQDLOh1VgEp6FRAAFzT7Zw+Y9V6JJExQAsRnRQ=='
   CephClientKey: 'AQC+vYNXgDAgAhAAc8UoYt+OTz5uhV7ItLdwUw=='
+  CephExtraKeys:
+    - name: "client.glance"
+      caps:
+        mgr: "allow *"
+        mon: "profile rbd"
+        osd: "profile rbd pool=images"
+      key: "AQBRgQ9eAAAAABAAv84zEilJYZPNuJ0Iwn9Ndg=="
+      mode: "0600"
   CephAnsiblePlaybookVerbosity: 1
   CephAnsibleEnvironmentVariables:
     ANSIBLE_SSH_RETRIES: '4'

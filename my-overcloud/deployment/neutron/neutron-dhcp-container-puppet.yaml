@@ -73,6 +73,12 @@ parameters:
     default: {}
     description: Parameters specific to the role
     type: json
+  DeployIdentifier:
+    default: ''
+    type: string
+    description: >
+      Setting this to a unique value will re-run any deployment tasks which
+      perform configuration on a Heat stack-update.
   EnableInternalTLS:
     type: boolean
     default: false
@@ -351,6 +357,8 @@ outputs:
                 -
                   - /run/openvswitch:/run/openvswitch:shared,z
                   - /var/lib/neutron:/var/lib/neutron:shared,z
+            environment:
+              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
         step_4:
           neutron_dhcp:
             start_order: 10
@@ -361,7 +369,7 @@ outputs:
             restart: always
             security_opt: 'label=disable'
             depends_on:
-              - openvswitch
+              - openvswitch.service
             healthcheck: {get_attr: [ContainersCommon, healthcheck_rpc_port]}
             ulimit: {get_param: DockerNeutronDHCPAgentUlimit}
             volumes:
@@ -432,7 +440,7 @@ outputs:
       fast_forward_upgrade_tasks:
         - when:
             - step|int == 0
-            - release == 'ocata'
+            - release == 'rocky'
           block:
             - name: Check if neutron_dhcp_agent is deployed
               command: systemctl is-enabled --quiet neutron-dhcp-agent
@@ -445,7 +453,7 @@ outputs:
           service: name=neutron-dhcp-agent state=stopped enabled=no
           when:
             - step|int == 2
-            - release == 'ocata'
+            - release == 'rocky'
             - neutron_dhcp_agent_enabled|bool
       post_upgrade_tasks:
         - name: Check for neutron user

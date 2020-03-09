@@ -544,6 +544,7 @@ resources:
       ServiceNetMap: {get_attr: [ServiceNetMap, service_net_map]}
       ServiceData:
         net_cidr_map: {get_attr: [NetCidrMapValue, value]}
+        net_vip_map: {get_attr: [VipMap, net_ip_map]}
       EndpointMap: {get_attr: [EndpointMapData, value]}
       DefaultPasswords: {get_attr: [DefaultPasswords, passwords]}
       RoleName: {{role.name}}
@@ -1121,6 +1122,13 @@ resources:
           - redis: {get_attr: [RedisVirtualIP, ip_address]}
           - ovn_dbs: {get_attr: [OVNDBsVirtualIP, ip_address]}
       CloudNames: {get_attr: [CloudNames, value]}
+      UndercloudHostsEntries: {get_param: UndercloudHostsEntries}
+      ExtraHostsEntries: {get_param: ExtraHostFileEntries}
+      VipHostsEntries:
+        if:
+          - add_vips_to_etc_hosts
+          - {get_attr: [VipHosts, value]}
+          - ''
 
 outputs:
   ManagedEndpoints:

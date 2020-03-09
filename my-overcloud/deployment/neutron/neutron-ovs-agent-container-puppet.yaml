@@ -45,6 +45,12 @@ parameters:
     description: Mapping of service endpoint -> protocol. Typically set
                  via parameter_defaults in the resource registry.
     type: json
+  DeployIdentifier:
+    default: ''
+    type: string
+    description: >
+      Setting this to a unique value will re-run any deployment tasks which
+      perform configuration on a Heat stack-update.
   DockerPuppetMountHostPuppet:
     type: boolean
     default: true
@@ -304,6 +310,7 @@ outputs:
                       - ''
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
+              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
         step_4:
           neutron_ovs_agent:
             start_order: 10
@@ -314,7 +321,7 @@ outputs:
             security_opt: 'label=disable'
             restart: always
             depends_on:
-              - openvswitch
+              - openvswitch.service
             healthcheck: {get_attr: [ContainersCommon, healthcheck_rpc_port]}
             ulimit: {get_param: DockerOpenvswitchUlimit}
             volumes:
@@ -385,7 +392,7 @@ outputs:
       fast_forward_upgrade_tasks:
         - when:
             - step|int == 0
-            - release == 'ocata'
+            - release == 'rocky'
           block:
             - name: Check if neutron_ovs_agent is deployed
               command: systemctl is-enabled --quiet neutron-openvswitch-agent
@@ -398,5 +405,5 @@ outputs:
           service: name=neutron-openvswitch-agent state=stopped enabled=no
           when:
             - step|int == 1
-            - release == 'ocata'
+            - release == 'rocky'
             - neutron_ovs_agent_enabled|bool

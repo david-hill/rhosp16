@@ -40,7 +40,7 @@ parameters:
     constraints:
       - allowed_values: ['tripleo-repos', 'custom-script']
   FastForwardRepoArgs:
-    default: {'tripleo_repos': {'ocata': '-b ocata current', 'pike': '-b pike current', 'queens': '-b queens current'}}
+    default: {'tripleo_repos': {'rocky': '-b rocky current', 'stein': '-b stein current', 'train': '-b train current'}}
     type: json
   FastForwardCustomRepoScriptContent:
     default: |
@@ -48,7 +48,7 @@ parameters:
       set -e
       echo "If you use FastForwardRepoType 'custom-script' you have to provide the upgrade repo script content."
       echo "It will be installed as /root/ffu_upgrade_repo.sh on the node"
-      echo "and passed the upstream name (ocata, pike, queens) of the release as first argument"
+      echo "and passed the upstream name (rocky, stein, train) of the release as first argument"
       exit 1
     type: string
   UpgradeLeappEnabled:
@@ -83,6 +83,11 @@ parameters:
       major-upgrade-composable-steps.yaml and major-upgrade-converge.yaml
       environment files.
     default: ''
+  SkipPackageUpdate:
+    default: 'false'
+    description: Set to true to skip the update all packages
+    type: boolean
+
 
 outputs:
   role_data:
@@ -184,6 +189,7 @@ outputs:
                   - pcs
                   - puppet-tripleo
                   - python3-heat-agent*
+                  - rsync
                 state: present
               when: ansible_distribution_major_version == '8'
         # With the layered product packaging, the key package is rhosp-openvswitch. It depends on
@@ -213,8 +219,17 @@ outputs:
         #     change with every major upgrade so this special handling will
         #     eventually replace the special handling of upgrading the
         #     openvswitch package "in place"
+        - name: Get current OpenvSwitch package name
+          register: ovs_pkg_out
+          shell:
+            rpm -qa | awk -F- '/^(openvswitch[0-9]+\.[0-9]+-|openvswitch-2)/{print $1}'
+        - name: Don't update if not present
+          set_fact:
+            run_ovs_update: "{{ (ovs_pkg_out.stdout | length) > 0 }}"
         - name: Block for gathering information for upgrading OpenvSwitch layered product packaging
-          when: step|int == 2
+          when:
+            - step|int == 2
+            - run_ovs_update|bool
           block:
             - name: Process rhosp-openvswitch layered package for new version number
               shell: |
@@ -229,11 +244,6 @@ outputs:
               set_fact:
                 new_ovs_version: "{{ rhosp_package_result.stdout }}"
               when: ovs_lp_packaging|default(false)
-
-            - name: Get current OpenvSwitch package name
-              register: ovs_pkg_out
-              shell:
-                rpm -qa | awk -F- '/^(openvswitch[0-9]+\.[0-9]+-|openvswitch-2)/{print $1}'
             - name: Get version from current OpenvSwitch package
               register: ovs_version_out
               shell:
@@ -276,7 +286,7 @@ outputs:
         - name: Check for openvswitch upgrade if not layered package installs
           when:
             - step|int == 2
-            - run_ovs_update|default(true)
+            - run_ovs_update|bool
           block:
             - name: check if an upgrade is required
               register: ovs_need_upgrade
@@ -316,7 +326,7 @@ outputs:
                 - "{{ovs_list_of_rpms.stdout_lines}}"
           when:
             - step|int == 2
-            - run_ovs_update|default(true)
+            - run_ovs_update|bool
             - ovs_packaging_issue|default(false)|succeeded
             - ovs_need_upgrade.stdout|default('')
         - name: Install libibverbs (https://bugs.launchpad.net/tripleo/+bug/1817743)
@@ -355,10 +365,15 @@ outputs:
             - step|int == 3
             - os_net_config_need_upgrade.stdout
             - os_net_config_has_config.rc == 0
+        - name: Set boolean skip_package_update
+          set_fact:
+            skip_package_update: {get_param: SkipPackageUpdate}
         # Exclude ansible until https://github.com/ansible/ansible/issues/56636
         # is available
         - name: Update all packages
-          when: step|int == 3
+          when:
+            - step|int == 3
+            - not skip_package_update|bool
           yum:
             name: '*'
             state: latest
@@ -386,10 +401,15 @@ outputs:
         - name: Exit if existing yum process
           fail: msg="ERROR existing yum.pid detected - can't continue! Please ensure there is no other package update process for the duration of the minor update worfklow. Exiting."
           when: (step|int == 0 or step|int == 3) and yum_pid_file.stat.exists
+        - name: Set boolean skip_package_update
+          set_fact:
+            skip_package_update: {get_param: SkipPackageUpdate}
         # Exclude ansible until https://github.com/ansible/ansible/issues/56636
         # is available
         - name: Update all packages
-          when: step|int == 3
+          when:
+            - step|int == 3
+            - not skip_package_update|bool
           yum:
             name: '*'
             state: latest

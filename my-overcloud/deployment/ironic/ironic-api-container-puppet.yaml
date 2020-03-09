@@ -36,6 +36,12 @@ parameters:
     default: {}
     description: Parameters specific to the role
     type: json
+  DeployIdentifier:
+    default: ''
+    type: string
+    description: >
+      Setting this to a unique value will re-run any deployment tasks which
+      perform configuration on a Heat stack-update.
   IronicPassword:
     description: The password for the Ironic service and db account, used by the Ironic services
     type: string
@@ -168,6 +174,7 @@ outputs:
           ironic::keystone::auth::password: {get_param: IronicPassword }
           ironic::keystone::auth::tenant: 'service'
           ironic::keystone::auth::region: {get_param: KeystoneRegion}
+          ironic::keystone::auth::roles: ['admin', 'service']
         mysql:
           ironic::db::mysql::password: {get_param: IronicPassword}
           ironic::db::mysql::user: ironic
@@ -231,6 +238,8 @@ outputs:
                   - /var/log/containers/httpd/ironic-api:/var/log/httpd:z
                   - /var/lib/config-data/ironic_api/etc/my.cnf.d/tripleo.cnf:/etc/my.cnf.d/tripleo.cnf:ro
             command: "/usr/bin/bootstrap_host_exec ironic_api su ironic -s /bin/bash -c 'ironic-dbsync --config-file /etc/ironic/ironic.conf'"
+            environment:
+              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
         step_4:
           ironic_api:
             start_order: 10
@@ -290,7 +299,7 @@ outputs:
       fast_forward_upgrade_tasks:
         - when:
             - step|int == 0
-            - release == 'ocata'
+            - release == 'rocky'
           block:
             - name: Check if ironic_api is deployed
               command: systemctl is-enabled --quiet openstack-ironic-api
@@ -303,7 +312,7 @@ outputs:
           service: name=openstack-ironic-api state=stopped enabled=no
           when:
             - step|int == 1
-            - release == 'ocata'
+            - release == 'rocky'
             - ironic_api_enabled|bool
         - name: Ironic package update
           package:
@@ -322,4 +331,4 @@ outputs:
           when:
             - step|int == 8
             - is_bootstrap_node|bool
-            - release == 'pike'
+            - release == 'stein'

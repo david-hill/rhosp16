@@ -177,6 +177,34 @@ parameters:
       - range: { min: 512 }
     tags:
       - role_specific
+  NovaReservedHugePages:
+    description: >
+      A list of valid key=value which reflect NUMA node ID,
+      page size (Default unit is KiB) and number of pages to be reserved.
+      Example -
+      NovaReservedHugePages: ["node:0,size:2048,count:64","node:1,size:1GB,count:1"]
+      will reserve on NUMA node 0 64 pages of 2MiB and on NUMA node 1 1 page of 1GiB
+    type: comma_delimited_list
+    default: []
+    tags:
+      - role_specific
+  KernelArgs:
+    default: ""
+    type: string
+    description: Kernel Args to apply to the host
+    tags:
+      - role_specific
+  OvsDpdkSocketMemory:
+    default: ""
+    description: >
+      Sets the amount of hugepage memory to assign per NUMA node. It is
+      recommended to use the socket closest to the PCIe slot used for the
+      desired DPDK NIC.  The format should be in "<socket 0 mem>, <socket 1
+      mem>, <socket n mem>", where the value is specified in MB.  For example:
+      "1024,0".
+    type: string
+    tags:
+      - role_specific
   MonitoringSubscriptionNovaCompute:
     default: 'overcloud-nova-compute'
     type: string
@@ -411,6 +439,7 @@ resources:
               nova::compute::cpu_shared_set: NovaComputeCpuSharedSet
               nova::compute::cpu_dedicated_set: NovaComputeCpuDedicatedSet
               nova::compute::reserved_host_memory: NovaReservedHostMemory
+              nova::compute::reserved_huge_pages: NovaReservedHugePages
               nova::compute::neutron_physnets_numa_nodes_mapping: NeutronPhysnetNUMANodesMapping
               nova::compute::neutron_tunnel_numa_nodes: NeutronTunnelNUMANodes
               nova::compute::resume_guests_state_on_host_boot: NovaResumeGuestsStateOnHostBoot
@@ -439,6 +468,51 @@ resources:
               NovaComputeCpuSharedSet: {get_param: NovaComputeCpuSharedSet}
               NovaComputeCpuDedicatedSet: {get_param: NovaComputeCpuDedicatedSet}
               NovaReservedHostMemory: {get_param: NovaReservedHostMemory}
+              NovaReservedHugePages:
+                #"repeat" function is run for the case when OvsDpdkSocketMemory is set
+                # and  when neither global or role based NovaReservedHugePages are set.
+                if:
+                - reserved_huge_pages_set
+                - get_param: NovaReservedHugePages
+                - if:
+                  - ovs_dpdk_socket_memory_not_set
+                  - get_param: NovaReservedHugePages
+                  - repeat:
+                      for_each:
+                        <%node%>:
+                          yaql:
+                            expression: range(0,len($.data.dpdk_p)).join(",").split(",")
+                            data:
+                              dpdk_p:
+                                if:
+                                - {equals: [{get_param: [RoleParameters, OvsDpdkSocketMemory]}, ""]}
+                                - str_split: [',',{get_param: OvsDpdkSocketMemory}]
+                                - str_split: [',',{get_param: [RoleParameters, OvsDpdkSocketMemory]}]
+                        <%size%>:
+                          yaql:
+                            expression: let(hzx => regex("([0-9]+[K|M|G])").search($.data.kern_p+$.data.kern_g)) -> let(hz =>switch($hzx = "4K" => "4", $hzx = "2M" => "2048", $hzx = "1G" => "1048576", $hzx  => "2048", $hzx = null => "2048")) -> [$hz]*len($.data.dpdk_p)
+                            data:
+                              dpdk_p:
+                                if:
+                                - {equals: [{get_param: [RoleParameters, OvsDpdkSocketMemory]}, ""]}
+                                - str_split: [',',{get_param: OvsDpdkSocketMemory}]
+                                - str_split: [',',{get_param: [RoleParameters, OvsDpdkSocketMemory]}]
+                              kern_p: {get_param: [RoleParameters, KernelArgs]}
+                              kern_g: {get_param: KernelArgs}
+                        <%count%>:
+                          yaql:
+                            expression: let(hzx => regex("([0-9]+[K|M|G])").search($.data.kern_p+$.data.kern_g)) -> let(hz =>int(switch($hzx = "4K" => "4", $hzx = "2M" => "2048", $hzx = "1G" => "1048576", $hzx  => "2048", $hzx = null => "2048"))) -> $.data.dpdk_p.select(int($)*1024/$hz).join(",").split(',')
+                            data:
+                              dpdk_p:
+                                if:
+                                - {equals: [{get_param: [RoleParameters, OvsDpdkSocketMemory]}, ""]}
+                                - str_split: [',',{get_param: OvsDpdkSocketMemory}]
+                                - str_split: [',',{get_param: [RoleParameters, OvsDpdkSocketMemory]}]
+                              kern_p: {get_param: [RoleParameters, KernelArgs]}
+                              kern_g: {get_param: KernelArgs}
+                      template: >-
+                        node:<%node%>,size:<%size%>,count:<%count%>
+                      permutations: false
               NeutronPhysnetNUMANodesMapping: {get_param: NeutronPhysnetNUMANodesMapping}
               NeutronTunnelNUMANodes: {get_param: NeutronTunnelNUMANodes}
               NovaResumeGuestsStateOnHostBoot: {get_param: NovaResumeGuestsStateOnHostBoot}
@@ -490,6 +564,17 @@ conditions:
         - equals: [{get_param: NovaNfsEnabled}, true]
         - equals: [{get_param: [RoleParameters, NovaNfsEnabled]}, '']
       - equals: [{get_param: [RoleParameters, NovaNfsEnabled]}, true]
+
+  reserved_huge_pages_set:
+    not:
+      and:
+      - equals: [{get_param: [RoleParameters, NovaReservedHugePages]}, ""]
+      - equals: [{get_param: NovaReservedHugePages}, []]
+
+  ovs_dpdk_socket_memory_not_set:
+    and:
+    - equals: [{get_param: [RoleParameters, OvsDpdkSocketMemory]}, ""]
+    - equals: [{get_param: OvsDpdkSocketMemory}, ""]
 
 outputs:
   role_data:
@@ -690,7 +775,7 @@ outputs:
                 user: nova
                 restart: always
                 depends_on:
-                  - tripleo_nova_libvirt
+                  - tripleo_nova_libvirt.service
                 healthcheck: {get_attr: [ContainersCommon, healthcheck_rpc_port]}
                 volumes:
                   list_concat:
@@ -709,6 +794,7 @@ outputs:
                       - /var/lib/libvirt:/var/lib/libvirt:shared,z
                       - /sys/class/net:/sys/class/net
                       - /sys/bus/pci:/sys/bus/pci
+                      - /boot:/boot:ro
                     -
                       # podman fails to relable if nova_nfs_enabled where we have
                       # the nfs share mounted to /var/lib/nova/instances
@@ -726,6 +812,7 @@ outputs:
                   map_merge:
                     - {get_param: NovaComputeOptEnvVars}
                     - KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
+                    - LIBGUESTFS_BACKEND: libvirt:qemu:///system
             - if:
                 - is_not_additional_cell
                 - nova_wait_for_compute_service:
@@ -1003,6 +1090,9 @@ outputs:
               delegate_to: localhost
               check_mode: no
               changed_when: false
+            - name: is additional Cell?
+              set_fact:
+                is_additional_cell: {get_param: NovaAdditionalCell}
             - name: Set fact for nova_compute services
               set_fact:
                 nova_compute_service: "{{ nova_compute_service_result.stdout | from_yaml | selectattr('Host', 'match', ansible_fqdn ~ '.*') | list }}"
@@ -1019,34 +1109,36 @@ outputs:
                   -> {{ nova_compute_service }}.
               when:
                 - (nova_compute_service | length) > 1
-            - name: Disable nova-compute service
-              command: openstack compute service set {{ nova_compute_service[0].Host }} nova-compute --disable
-              delegate_to: localhost
-              check_mode: no
+            - name: Disable nova services
               when:
-                - (nova_compute_service | length) <= 1
-            - name: Stop nova-compute healthcheck container
-              service:
-                name: tripleo_nova_compute_healthcheck
-                state: stopped
-                enabled: no
-              become: true
-            - name: Stop nova-compute container
-              service:
-                name: tripleo_nova_compute
-                state: stopped
-                enabled: no
-              become: true
-            - name: Delete nova-compute service
-              command: openstack compute service delete {{ nova_compute_service[0].ID }}
-              delegate_to: localhost
-              check_mode: no
-              when:
-                - (nova_compute_service | length) <= 1
+                - (nova_compute_service | length) == 1
+              block:
+                - name: Disable nova-compute service
+                  command: openstack compute service set {{ nova_compute_service[0].Host }} nova-compute --disable
+                  delegate_to: localhost
+                  check_mode: no
+                  when:
+                    - not is_additional_cell|bool
+                - name: Stop nova-compute healthcheck container
+                  service:
+                    name: tripleo_nova_compute_healthcheck
+                    state: stopped
+                    enabled: no
+                  become: true
+                - name: Stop nova-compute container
+                  service:
+                    name: tripleo_nova_compute
+                    state: stopped
+                    enabled: no
+                  become: true
+                - name: Delete nova-compute service
+                  command: openstack compute service delete {{ nova_compute_service[0].ID }}
+                  delegate_to: localhost
+                  check_mode: no
       fast_forward_upgrade_tasks:
         - when:
             - step|int == 0
-            - release == 'ocata'
+            - release == 'rocky'
           block:
             - name: Check if nova-compute is deployed
               command:  systemctl is-enabled --quiet openstack-nova-compute
@@ -1057,7 +1149,7 @@ outputs:
                 nova_compute_enabled: "{{ nova_compute_enabled_result.rc == 0 }}"
         - when:
             - step|int == 1
-            - release == 'ocata'
+            - release == 'rocky'
           block:
             - name: Stop and disable nova-compute service
               service: name=openstack-nova-compute state=stopped

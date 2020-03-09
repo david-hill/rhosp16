@@ -132,6 +132,7 @@ outputs:
         step_5:
           octavia_health_manager:
             start_order: 2
+            stop_grace_period: 300
             image: *octavia_health_manager_image
             net: host
             privileged: false
@@ -163,15 +164,3 @@ outputs:
               Log files from octavia containers can be found under
               /var/log/containers/octavia and /var/log/containers/httpd/octavia-api.
           ignore_errors: true
-      post_upgrade_tasks:
-        - name: remove directory /etc/octavia/conf.d/common
-          when: step|int == 5
-          file:
-            path: "/var/lib/config-data/puppet-generated/octavia/etc/octavia/conf.d/common"
-            state: absent
-      post_update_tasks:
-        - name: remove directory /etc/octavia/conf.d/common
-          when: step|int == 5
-          file:
-            path: "/var/lib/config-data/puppet-generated/octavia/etc/octavia/conf.d/common"
-            state: absent

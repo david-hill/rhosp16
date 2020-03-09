@@ -219,6 +219,10 @@ parameters:
         protocol: http
         port: '8786'
         host: IP_ADDRESS
+      MetricsQdrPublic:
+        protocol: amqp
+        port: '5666'
+        host: IP_ADDRESS
       MistralAdmin:
         protocol: http
         port: '8989'
@@ -294,6 +298,18 @@ parameters:
       OctaviaPublic:
         protocol: http
         port: '9876'
+        host: IP_ADDRESS
+      PankoAdmin:
+        protocol: http
+        port: '8977'
+        host: IP_ADDRESS
+      PankoInternal:
+        protocol: http
+        port: '8977'
+        host: IP_ADDRESS
+      PankoPublic:
+        protocol: http
+        port: '8977'
         host: IP_ADDRESS
       PlacementAdmin:
         protocol: http
@@ -8354,6 +8370,133 @@ outputs:
               - EndpointMap
               - ManilaPublic
               - port
+      MetricsQdrPublic:
+        host:
+          str_replace:
+            template:
+              get_param:
+              - EndpointMap
+              - MetricsQdrPublic
+              - host
+            params:
+              CLOUDNAME:
+                get_param:
+                - CloudEndpoints
+                - get_param:
+                  - ServiceNetMap
+                  - PublicNetwork
+              IP_ADDRESS:
+                get_param:
+                - NetIpMap
+                - str_replace:
+                    params:
+                      NETWORK:
+                        get_param:
+                        - ServiceNetMap
+                        - PublicNetwork
+                    template: NETWORK_uri
+        host_nobrackets:
+          str_replace:
+            template:
+              get_param:
+              - EndpointMap
+              - MetricsQdrPublic
+              - host
+            params:
+              CLOUDNAME:
+                get_param:
+                - CloudEndpoints
+                - get_param:
+                  - ServiceNetMap
+                  - PublicNetwork
+              IP_ADDRESS:
+                get_param:
+                - NetIpMap
+                - get_param:
+                  - ServiceNetMap
+                  - PublicNetwork
+        port:
+          get_param:
+          - EndpointMap
+          - MetricsQdrPublic
+          - port
+        protocol:
+          get_param:
+          - EndpointMap
+          - MetricsQdrPublic
+          - protocol
+        uri:
+          make_url:
+            scheme:
+              get_param:
+              - EndpointMap
+              - MetricsQdrPublic
+              - protocol
+            host:
+              str_replace:
+                template:
+                  get_param:
+                  - EndpointMap
+                  - MetricsQdrPublic
+                  - host
+                params:
+                  CLOUDNAME:
+                    get_param:
+                    - CloudEndpoints
+                    - get_param:
+                      - ServiceNetMap
+                      - PublicNetwork
+                  IP_ADDRESS:
+                    get_param:
+                    - NetIpMap
+                    - str_replace:
+                        params:
+                          NETWORK:
+                            get_param:
+                            - ServiceNetMap
+                            - PublicNetwork
+                        template: NETWORK_uri
+            port:
+              get_param:
+              - EndpointMap
+              - MetricsQdrPublic
+              - port
+        uri_no_suffix:
+          make_url:
+            scheme:
+              get_param:
+              - EndpointMap
+              - MetricsQdrPublic
+              - protocol
+            host:
+              str_replace:
+                template:
+                  get_param:
+                  - EndpointMap
+                  - MetricsQdrPublic
+                  - host
+                params:
+                  CLOUDNAME:
+                    get_param:
+                    - CloudEndpoints
+                    - get_param:
+                      - ServiceNetMap
+                      - PublicNetwork
+                  IP_ADDRESS:
+                    get_param:
+                    - NetIpMap
+                    - str_replace:
+                        params:
+                          NETWORK:
+                            get_param:
+                            - ServiceNetMap
+                            - PublicNetwork
+                        template: NETWORK_uri
+            port:
+              get_param:
+              - EndpointMap
+              - MetricsQdrPublic
+              - port
       MistralAdmin:
         host:
           str_replace:
@@ -11158,6 +11301,387 @@ outputs:
               get_param:
               - EndpointMap
               - PlacementPublic
+              - port
+      PankoAdmin:
+        host:
+          str_replace:
+            template:
+              get_param:
+              - EndpointMap
+              - PankoAdmin
+              - host
+            params:
+              CLOUDNAME:
+                get_param:
+                - CloudEndpoints
+                - get_param:
+                  - ServiceNetMap
+                  - PankoApiNetwork
+              IP_ADDRESS:
+                get_param:
+                - NetIpMap
+                - str_replace:
+                    params:
+                      NETWORK:
+                        get_param:
+                        - ServiceNetMap
+                        - PankoApiNetwork
+                    template: NETWORK_uri
+        host_nobrackets:
+          str_replace:
+            template:
+              get_param:
+              - EndpointMap
+              - PankoAdmin
+              - host
+            params:
+              CLOUDNAME:
+                get_param:
+                - CloudEndpoints
+                - get_param:
+                  - ServiceNetMap
+                  - PankoApiNetwork
+              IP_ADDRESS:
+                get_param:
+                - NetIpMap
+                - get_param:
+                  - ServiceNetMap
+                  - PankoApiNetwork
+        port:
+          get_param:
+          - EndpointMap
+          - PankoAdmin
+          - port
+        protocol:
+          get_param:
+          - EndpointMap
+          - PankoAdmin
+          - protocol
+        uri:
+          make_url:
+            scheme:
+              get_param:
+              - EndpointMap
+              - PankoAdmin
+              - protocol
+            host:
+              str_replace:
+                template:
+                  get_param:
+                  - EndpointMap
+                  - PankoAdmin
+                  - host
+                params:
+                  CLOUDNAME:
+                    get_param:
+                    - CloudEndpoints
+                    - get_param:
+                      - ServiceNetMap
+                      - PankoApiNetwork
+                  IP_ADDRESS:
+                    get_param:
+                    - NetIpMap
+                    - str_replace:
+                        params:
+                          NETWORK:
+                            get_param:
+                            - ServiceNetMap
+                            - PankoApiNetwork
+                        template: NETWORK_uri
+            port:
+              get_param:
+              - EndpointMap
+              - PankoAdmin
+              - port
+        uri_no_suffix:
+          make_url:
+            scheme:
+              get_param:
+              - EndpointMap
+              - PankoAdmin
+              - protocol
+            host:
+              str_replace:
+                template:
+                  get_param:
+                  - EndpointMap
+                  - PankoAdmin
+                  - host
+                params:
+                  CLOUDNAME:
+                    get_param:
+                    - CloudEndpoints
+                    - get_param:
+                      - ServiceNetMap
+                      - PankoApiNetwork
+                  IP_ADDRESS:
+                    get_param:
+                    - NetIpMap
+                    - str_replace:
+                        params:
+                          NETWORK:
+                            get_param:
+                            - ServiceNetMap
+                            - PankoApiNetwork
+                        template: NETWORK_uri
+            port:
+              get_param:
+              - EndpointMap
+              - PankoAdmin
+              - port
+      PankoInternal:
+        host:
+          str_replace:
+            template:
+              get_param:
+              - EndpointMap
+              - PankoInternal
+              - host
+            params:
+              CLOUDNAME:
+                get_param:
+                - CloudEndpoints
+                - get_param:
+                  - ServiceNetMap
+                  - PankoApiNetwork
+              IP_ADDRESS:
+                get_param:
+                - NetIpMap
+                - str_replace:
+                    params:
+                      NETWORK:
+                        get_param:
+                        - ServiceNetMap
+                        - PankoApiNetwork
+                    template: NETWORK_uri
+        host_nobrackets:
+          str_replace:
+            template:
+              get_param:
+              - EndpointMap
+              - PankoInternal
+              - host
+            params:
+              CLOUDNAME:
+                get_param:
+                - CloudEndpoints
+                - get_param:
+                  - ServiceNetMap
+                  - PankoApiNetwork
+              IP_ADDRESS:
+                get_param:
+                - NetIpMap
+                - get_param:
+                  - ServiceNetMap
+                  - PankoApiNetwork
+        port:
+          get_param:
+          - EndpointMap
+          - PankoInternal
+          - port
+        protocol:
+          get_param:
+          - EndpointMap
+          - PankoInternal
+          - protocol
+        uri:
+          make_url:
+            scheme:
+              get_param:
+              - EndpointMap
+              - PankoInternal
+              - protocol
+            host:
+              str_replace:
+                template:
+                  get_param:
+                  - EndpointMap
+                  - PankoInternal
+                  - host
+                params:
+                  CLOUDNAME:
+                    get_param:
+                    - CloudEndpoints
+                    - get_param:
+                      - ServiceNetMap
+                      - PankoApiNetwork
+                  IP_ADDRESS:
+                    get_param:
+                    - NetIpMap
+                    - str_replace:
+                        params:
+                          NETWORK:
+                            get_param:
+                            - ServiceNetMap
+                            - PankoApiNetwork
+                        template: NETWORK_uri
+            port:
+              get_param:
+              - EndpointMap
+              - PankoInternal
+              - port
+        uri_no_suffix:
+          make_url:
+            scheme:
+              get_param:
+              - EndpointMap
+              - PankoInternal
+              - protocol
+            host:
+              str_replace:
+                template:
+                  get_param:
+                  - EndpointMap
+                  - PankoInternal
+                  - host
+                params:
+                  CLOUDNAME:
+                    get_param:
+                    - CloudEndpoints
+                    - get_param:
+                      - ServiceNetMap
+                      - PankoApiNetwork
+                  IP_ADDRESS:
+                    get_param:
+                    - NetIpMap
+                    - str_replace:
+                        params:
+                          NETWORK:
+                            get_param:
+                            - ServiceNetMap
+                            - PankoApiNetwork
+                        template: NETWORK_uri
+            port:
+              get_param:
+              - EndpointMap
+              - PankoInternal
+              - port
+      PankoPublic:
+        host:
+          str_replace:
+            template:
+              get_param:
+              - EndpointMap
+              - PankoPublic
+              - host
+            params:
+              CLOUDNAME:
+                get_param:
+                - CloudEndpoints
+                - get_param:
+                  - ServiceNetMap
+                  - PublicNetwork
+              IP_ADDRESS:
+                get_param:
+                - NetIpMap
+                - str_replace:
+                    params:
+                      NETWORK:
+                        get_param:
+                        - ServiceNetMap
+                        - PublicNetwork
+                    template: NETWORK_uri
+        host_nobrackets:
+          str_replace:
+            template:
+              get_param:
+              - EndpointMap
+              - PankoPublic
+              - host
+            params:
+              CLOUDNAME:
+                get_param:
+                - CloudEndpoints
+                - get_param:
+                  - ServiceNetMap
+                  - PublicNetwork
+              IP_ADDRESS:
+                get_param:
+                - NetIpMap
+                - get_param:
+                  - ServiceNetMap
+                  - PublicNetwork
+        port:
+          get_param:
+          - EndpointMap
+          - PankoPublic
+          - port
+        protocol:
+          get_param:
+          - EndpointMap
+          - PankoPublic
+          - protocol
+        uri:
+          make_url:
+            scheme:
+              get_param:
+              - EndpointMap
+              - PankoPublic
+              - protocol
+            host:
+              str_replace:
+                template:
+                  get_param:
+                  - EndpointMap
+                  - PankoPublic
+                  - host
+                params:
+                  CLOUDNAME:
+                    get_param:
+                    - CloudEndpoints
+                    - get_param:
+                      - ServiceNetMap
+                      - PublicNetwork
+                  IP_ADDRESS:
+                    get_param:
+                    - NetIpMap
+                    - str_replace:
+                        params:
+                          NETWORK:
+                            get_param:
+                            - ServiceNetMap
+                            - PublicNetwork
+                        template: NETWORK_uri
+            port:
+              get_param:
+              - EndpointMap
+              - PankoPublic
+              - port
+        uri_no_suffix:
+          make_url:
+            scheme:
+              get_param:
+              - EndpointMap
+              - PankoPublic
+              - protocol
+            host:
+              str_replace:
+                template:
+                  get_param:
+                  - EndpointMap
+                  - PankoPublic
+                  - host
+                params:
+                  CLOUDNAME:
+                    get_param:
+                    - CloudEndpoints
+                    - get_param:
+                      - ServiceNetMap
+                      - PublicNetwork
+                  IP_ADDRESS:
+                    get_param:
+                    - NetIpMap
+                    - str_replace:
+                        params:
+                          NETWORK:
+                            get_param:
+                            - ServiceNetMap
+                            - PublicNetwork
+                        template: NETWORK_uri
+            port:
+              get_param:
+              - EndpointMap
+              - PankoPublic
               - port
       SaharaAdmin:
         host:

@@ -64,6 +64,7 @@ parameter_defaults:
   CephAdminKey: 'AQDLOh1VgEp6FRAAFzT7Zw+Y9V6JJExQAsRnRQ=='
   CephClientKey: 'AQC+vYNXgDAgAhAAc8UoYt+OTz5uhV7ItLdwUw=='
   CephAnsiblePlaybookVerbosity: 1
+  CephAnsibleRepo: "rhceph-4-tools-for-rhel-8-x86_64-rpms"
   CephAnsibleEnvironmentVariables:
     ANSIBLE_SSH_RETRIES: '4'
     DEFAULT_FORKS: '3'

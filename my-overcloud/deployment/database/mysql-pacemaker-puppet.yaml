@@ -10,6 +10,14 @@ parameters:
   ContainerMysqlConfigImage:
     description: The container image to use for the mysql config_volume
     type: string
+  ClusterCommonTag:
+    default: false
+    description: When set to false, a pacemaker service is configured
+                 to use a floating tag for its container image name,
+                 e.g. 'REGISTRY/NAMESPACE/IMAGENAME:pcmklatest'. When
+                 set to true, the service uses a floating prefix as
+                 well, e.g. 'cluster.common.tag/IMAGENAME:pcmklatest'.
+    type: boolean
   EndpointMap:
     default: {}
     description: Mapping of service endpoint -> protocol. Typically set
@@ -93,6 +101,7 @@ conditions:
   puppet_debug_enabled: {get_param: ConfigDebug}
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
   docker_enabled: {equals: [{get_param: ContainerCli}, 'docker']}
+  common_tag_enabled: {equals: [{get_param: ClusterCommonTag}, true]}
 
 outputs:
   role_data:
@@ -123,12 +132,15 @@ outputs:
             tripleo::profile::pacemaker::database::mysql::ca_file:
               get_param: InternalTLSCAFile
             tripleo::profile::pacemaker::database::mysql_bundle::mysql_docker_image: &mysql_image_pcmklatest
-              list_join:
-                - ':'
-                - - yaql:
-                      data: {get_param: ContainerMysqlImage}
-                      expression: $.data.rightSplit(separator => ":", maxSplits => 1)[0]
-                  - 'pcmklatest'
+              yaql:
+                data:
+                  if:
+                    - common_tag_enabled
+                    - yaql:
+                        data: {get_param: ContainerMysqlImage}
+                        expression: concat("cluster.common.tag/", $.data.rightSplit(separator => "/", maxSplits => 1)[1])
+                    - {get_param: ContainerMysqlImage}
+                expression: concat($.data.rightSplit(separator => ":", maxSplits => 1)[0], ":pcmklatest")
             tripleo::profile::pacemaker::database::mysql_bundle::control_port: 3123
             tripleo::profile::pacemaker::database::mysql_bundle::container_backend: {get_param: ContainerCli}
             tripleo::mysql::firewall_rules:
@@ -347,19 +359,6 @@ outputs:
                 container_image_latest: "{{galera_image_latest}}"
               when:
                 - old_galera_image_id.stdout != new_galera_image_id.stdout
-            - block:
-                - name: Get a list of container using galera image
-                  shell: "{{container_cli}} ps -a -q -f 'ancestor={{old_galera_image_id.stdout}}'"
-                  register: galera_containers_to_destroy
-                # It will be recreated with the delpoy step.
-                - name: Remove any container using the same galera image
-                  shell: "{{container_cli}} rm -fv {{item}}"
-                  with_items: "{{ galera_containers_to_destroy.stdout_lines }}"
-                - name: Remove previous galera images
-                  shell: "{{container_cli}} rmi -f {{old_galera_image_id.stdout}}"
-              when:
-                - old_galera_image_id.stdout != ''
-                - old_galera_image_id.stdout != new_galera_image_id.stdout
 
       upgrade_tasks:
         - vars:
@@ -491,9 +490,6 @@ outputs:
                 - groups['mysql'] | length > 1
                 - item.split('.')[0] in ansible_limit.split(',')
               loop: "{{ mysql_node_names }}"
-
-            - debug:
-                msg: "Prepare galera upgrade for {{ mysql_short_node_names_upgraded }}"
             - fail:
                 msg: >
                   You can't upgrade galera without staged upgrade.
@@ -503,13 +499,16 @@ outputs:
                 mysql_short_node_names_upgraded | length == 0 or
                 mysql_node_names_upgraded is not defined or
                 mysql_node_names_upgraded | length == 0
-
+            - debug:
+                msg: "Prepare galera upgrade for {{ mysql_short_node_names_upgraded }}"
             - name: remove mysql init container on upgrade-scaleup to force re-init
-              shell: |
-                if podman inspect mysql_init_bundle &> /dev/null; then
-                    podman rm mysql_init_bundle
-                fi
-              when: mysql_short_node_names_upgraded | length > 1
+              include_role:
+                name: tripleo-container-rm
+              vars:
+                tripleo_containers_to_rm:
+                  - mysql_init_bundle
+              when:
+                - mysql_short_node_names_upgraded | length > 1
             - name: add the mysql short name to hiera data for the upgrade.
               include_role:
                 name: tripleo-upgrade-hiera
@@ -617,7 +616,7 @@ outputs:
       fast_forward_upgrade_tasks:
         - when:
             - step|int == 6
-            - release == 'ocata'
+            - release == 'rocky'
             - is_bootstrap_node|bool
           block:
             - name: Remove whitespaces in .my.cnf

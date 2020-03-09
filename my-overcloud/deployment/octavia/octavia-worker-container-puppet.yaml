@@ -119,6 +119,7 @@ outputs:
         step_5:
           octavia_worker:
             start_order: 2
+            stop_grace_period: 300
             image: *octavia_worker_image
             net: host
             privileged: false
@@ -163,15 +164,3 @@ outputs:
             persistent: yes
             state: yes
       upgrade_tasks: []
-      post_upgrade_tasks:
-        - name: remove directory /etc/octavia/conf.d/common
-          when: step|int == 5
-          file:
-            path: "/var/lib/config-data/puppet-generated/octavia/etc/octavia/conf.d/common"
-            state: absent
-      post_update_tasks:
-        - name: remove directory /etc/octavia/conf.d/common
-          when: step|int == 5
-          file:
-            path: "/var/lib/config-data/puppet-generated/octavia/etc/octavia/conf.d/common"
-            state: absent

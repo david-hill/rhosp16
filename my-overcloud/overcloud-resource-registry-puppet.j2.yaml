@@ -159,6 +159,7 @@ resource_registry:
   OS::TripleO::Services::NeutronCorePluginNSX: deployment/neutron/neutron-plugin-nsx-container-puppet.yaml
   OS::TripleO::Services::OVNDBs: deployment/ovn/ovn-dbs-container-puppet.yaml
   OS::TripleO::Services::OVNController: deployment/ovn/ovn-controller-container-puppet.yaml
+  OS::TripleO::Services::OvsDpdkNetcontrold: OS::Heat::None
 
   OS::TripleO::Services::NeutronCorePluginMLNXSDN: deployment/neutron/neutron-plugin-ml2-mlnx-sdn-assist-container-puppet.yaml
   OS::TripleO::Services::NeutronCorePluginVTS: deployment/neutron/neutron-plugin-ml2-cisco-vts-container-puppet.yaml
@@ -177,6 +178,7 @@ resource_registry:
   OS::TripleO::Services::OsloMessagingRpc: deployment/rabbitmq/rabbitmq-messaging-rpc-container-puppet.yaml
   OS::TripleO::Services::OsloMessagingNotify: deployment/rabbitmq/rabbitmq-messaging-notify-shared-puppet.yaml
   OS::TripleO::Services::RabbitMQ: OS::Heat::None
+  OS::TripleO::Services::Rear: OS::Heat::None
   OS::TripleO::Services::Qdr: OS::Heat::None
   OS::TripleO::Services::HAproxy: deployment/haproxy/haproxy-container-puppet.yaml
   OS::TripleO::Services::HAProxyPublicTLS: deployment/haproxy/haproxy-public-tls-inject.yaml
@@ -259,6 +261,7 @@ resource_registry:
   OS::TripleO::Services::AodhEvaluator: OS::Heat::None
   OS::TripleO::Services::AodhListener: OS::Heat::None
   OS::TripleO::Services::AodhNotifier: OS::Heat::None
+  OS::TripleO::Services::PankoApi: OS::Heat::None
   OS::TripleO::Services::MetricsQdr: OS::Heat::None
   OS::TripleO::Services::MistralEngine: OS::Heat::None
   OS::TripleO::Services::MistralApi: OS::Heat::None
@@ -326,9 +329,11 @@ resource_registry:
   # see https://review.opendev.org/#/c/563443
   OS::TripleO::Docker::NeutronMl2PluginBase: deployment/neutron/neutron-plugin-ml2-ovn.yaml
   OS::TripleO::Services::Multipathd: OS::Heat::None
+  OS::TripleO::Services::GlanceApiEdge: OS::Heat::None
+  OS::TripleO::Services::HAproxyEdge: OS::Heat::None
 
   # Logging
-  OS::TripleO::Services::Tmpwatch: OS::Heat::None
+  OS::TripleO::Services::Tmpwatch: deployment/logrotate/tmpwatch-install.yaml
   OS::TripleO::Services::Logging::BarbicanApi: deployment/logging/files/barbican-api.yaml
   OS::TripleO::Services::Logging::GlanceApi: deployment/glance/glance-api-logging-file-container.yaml
   OS::TripleO::Services::Logging::HAProxy: deployment/logging/files/haproxy.yaml
@@ -342,6 +347,7 @@ resource_registry:
   OS::TripleO::Services::Logging::NovaMetadata: deployment/logging/files/nova-metadata.yaml
   OS::TripleO::Services::Logging::NovaCommon: deployment/logging/files/nova-common.yaml
   OS::TripleO::Services::Logging::NovaLibvirt: deployment/logging/files/nova-libvirt.yaml
+  OS::TripleO::Services::Logging::PankoApi: deployment/logging/files/panko-api.yaml
   OS::TripleO::Services::Logging::PlacementApi: deployment/logging/files/placement-api.yaml
 
   # Tempest
