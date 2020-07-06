@@ -133,16 +133,46 @@ outputs:
                 path: /etc/sysconfig/podman_drop_in
                 state: absent
 
+      deploy_steps_tasks:
+        - when:
+            - (step|int) == 1
+          block:
+            # TODO(mwhahaha): figure out the bug in podman_image
+            - name: Pre-fetch all the containers
+              become: true
+              shell: podman pull "{{ container_image }}"
+              loop_control:
+                  loop_var: container_image
+              loop: "{{ lookup('file', tripleo_role_name + '/docker_config.yaml', errors='ignore') | default('{}', True) | from_yaml | recursive_get_key_from_dict(key='image') | unique }}"
+
       service_config_settings: {}
 
       upgrade_tasks:
+        - name: Run podman install
+          when:
+            - step|int == 1
+          block:
+            - name: Set container_registry_insecure_registries fact.
+              set_fact:
+                container_registry_insecure_registries:
+                  if:
+                    - insecure_registry_is_empty
+                    - []
+                    - {get_param: DockerInsecureRegistryAddress}
+            - include_role:
+                name: tripleo-podman
+                tasks_from: tripleo_podman_install.yml
+                vars_from: "redhat.yml"
+              vars:
+                tripleo_container_registry_insecure_registries: "{{ container_registry_insecure_registries }}"
+
         - name: system_upgrade_prepare step 2
           tags:
             - never
             - system_upgrade
             - system_upgrade_prepare
           when:
-            - (step | int) == 2
+            - step|int == 2
           block:
             - name: Check if pcs is present
               stat:
@@ -162,14 +192,6 @@ outputs:
                 - never
                 - system_upgrade
                 - system_upgrade_prepare
-
-        - name: Run podman install
-          when:
-            - (step | int) == 1
-          include_role:
-            name: tripleo-podman
-            tasks_from: tripleo_podman_install.yml
-            vars_from: "redhat.yml"
 
       post_upgrade_tasks:
         - name: Purge everything about docker on the host

@@ -73,12 +73,6 @@ parameters:
     default: {}
     description: Parameters specific to the role
     type: json
-  DeployIdentifier:
-    default: ''
-    type: string
-    description: >
-      Setting this to a unique value will re-run any deployment tasks which
-      perform configuration on a Heat stack-update.
   EnableInternalTLS:
     type: boolean
     default: false
@@ -357,8 +351,6 @@ outputs:
                 -
                   - /run/openvswitch:/run/openvswitch:shared,z
                   - /var/lib/neutron:/var/lib/neutron:shared,z
-            environment:
-              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
         step_4:
           neutron_dhcp:
             start_order: 10
@@ -378,7 +370,7 @@ outputs:
                 - {get_attr: [NeutronLogging, volumes]}
                 -
                   - /var/lib/kolla/config_files/neutron_dhcp.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/neutron/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/neutron:/var/lib/kolla/config_files/src:ro
                   - /lib/modules:/lib/modules:ro
                   - /run/openvswitch:/run/openvswitch:shared,z
                   - /var/lib/neutron:/var/lib/neutron:shared,z
@@ -421,10 +413,10 @@ outputs:
           - - name: create /run/netns with temp namespace
               command: ip netns add ns_temp
               register: ipnetns_add_result
-              ignore_errors: True
+              failed_when: false
           - - name: remove temp namespace
               command: ip netns delete ns_temp
-              ignore_errors: True
+              failed_when: false
               when: ipnetns_add_result.rc == 0
           - - name: create /var/lib/neutron
               file:
@@ -444,7 +436,7 @@ outputs:
           block:
             - name: Check if neutron_dhcp_agent is deployed
               command: systemctl is-enabled --quiet neutron-dhcp-agent
-              ignore_errors: True
+              failed_when: false
               register: neutron_dhcp_agent_enabled_result
             - name: Set fact neutron_dhcp_agent_enabled
               set_fact:
@@ -460,7 +452,7 @@ outputs:
           getent:
             database: passwd
             key: neutron
-          ignore_errors: True
+            fail_key: false
         - name: Set neutron_user_avail
           set_fact:
             neutron_user_avail: "{{ getent_passwd is defined }}"
@@ -476,7 +468,7 @@ outputs:
                 setfacl -R -m u:neutron:rw /var/lib/neutron
                 find /var/lib/neutron -type d -exec setfacl -m u:neutron:rwx '{}' \;
             - name: Provide access for domain sockets
-              ignore_errors: True
+              failed_when: false
               become: true
               shell: |
                 umask 0002
@@ -485,4 +477,4 @@ outputs:
                 - /var/lib/neutron/metadata_proxy
                 - /var/lib/neutron
               # These files are not necessarily present
-              ignore_errors: True
+              failed_when: false

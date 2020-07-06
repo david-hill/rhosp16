@@ -124,7 +124,7 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/cinder_scheduler.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/cinder/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/cinder:/var/lib/kolla/config_files/src:ro
                   - /var/log/containers/cinder:/var/log/cinder:z
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
@@ -135,15 +135,7 @@ outputs:
             state: directory
             setype: "{{ item.setype }}"
           with_items:
-            - { 'path': /var/log/containers/cinder, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/cinder, 'setype': svirt_sandbox_file_t }
-        - name: cinder logs readme
-          copy:
-            dest: /var/log/cinder/readme.txt
-            content: |
-              Log files from cinder containers can be found under
-              /var/log/containers/cinder and /var/log/containers/httpd/cinder-api.
-          ignore_errors: true
+            - { 'path': /var/log/containers/cinder, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
         - name: enable virt_sandbox_use_netlink for healthcheck
           seboolean:
             name: virt_sandbox_use_netlink
@@ -171,7 +163,7 @@ outputs:
           block:
             - name: Check if cinder_scheduler is deployed
               command: systemctl is-enabled --quiet openstack-cinder-scheduler
-              ignore_errors: True
+              failed_when: false
               register: cinder_scheduler_enabled_result
             - name: Set fact cinder_scheduler_enabled
               set_fact:

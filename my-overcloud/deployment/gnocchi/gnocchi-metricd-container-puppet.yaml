@@ -144,7 +144,7 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/gnocchi_metricd.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/gnocchi/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/gnocchi:/var/lib/kolla/config_files/src:ro
                   - /var/log/containers/gnocchi:/var/log/gnocchi:z
                   - /etc/ceph:/var/lib/kolla/config_files/src-ceph:ro
                   - str_replace:
@@ -159,15 +159,7 @@ outputs:
             state: directory
             setype: "{{ item.setype }}"
           with_items:
-            - { 'path': /var/log/containers/gnocchi, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/gnocchi, 'setype': svirt_sandbox_file_t }
-        - name: gnocchi logs readme
-          copy:
-            dest: /var/log/gnocchi/readme.txt
-            content: |
-              Log files from gnocchi containers can be found under
-              /var/log/containers/gnocchi and /var/log/containers/httpd/gnocchi-api.
-          ignore_errors: true
+            - { 'path': /var/log/containers/gnocchi, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
         - name: create persistent data directory
           file:
             path: {get_param: GnocchiFileBasePath}
@@ -200,7 +192,7 @@ outputs:
           block:
             - name: FFU check if openstack-gnocchi-metricd is deployed
               command: systemctl is-enabled --quiet openstack-gnocchi-metricd
-              ignore_errors: True
+              failed_when: false
               register: gnocchi_metricd_enabled_result
             - name: Set fact gnocchi_metricd_enabled
               set_fact:

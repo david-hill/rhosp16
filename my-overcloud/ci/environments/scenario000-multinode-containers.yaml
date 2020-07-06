@@ -33,5 +33,5 @@ parameter_defaults:
   Debug: true
   DockerPuppetDebug: True
   NotificationDriver: 'noop'
-  CephAnsibleRepo: "rhceph-4-tools-for-rhel-8-x86_64-rpms"
+  CephAnsibleRepo: "tripleo-centos-ceph-nautilus"
   ContainerCli: podman

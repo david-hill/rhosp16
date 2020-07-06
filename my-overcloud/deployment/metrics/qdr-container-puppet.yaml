@@ -138,9 +138,14 @@ parameters:
   EnableInternalTLS:
     type: boolean
     default: false
+  EnableSTF:
+    default: false
+    description: Set to true to enable configuration for STF client.
+    type: boolean
 
 conditions:
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
+  enable_stf: {equals: [{get_param: EnableSTF}, true]}
 
 
 resources:
@@ -181,7 +186,13 @@ outputs:
                 template:
                   "%{hiera('$NETWORK')}"
                 params:
-                  $NETWORK: {get_param: [ServiceNetMap, MetricsQdrNetwork]}
+                  $NETWORK:
+                    get_param:
+                      - ServiceNetMap
+                      - str_replace:
+                          template: "ROLENAMEMetricsQdrNetwork"
+                          params:
+                            ROLENAME: {get_param: RoleName}
             tripleo::profile::base::metrics::qdr::listen_on_external: {get_param: MetricsQdrExternalEndpoint}
             tripleo::profile::base::metrics::qdr::listener_port: {get_param: MetricsQdrPort}
             tripleo::profile::base::metrics::qdr::username: {get_param: MetricsQdrUsername}
@@ -215,12 +226,24 @@ outputs:
                   str_replace:
                     template: "%{hiera('fqdn_NETWORK')}"
                     params:
-                      NETWORK: {get_param: [ServiceNetMap, MetricsQdrNetwork]}
+                      NETWORK:
+                        get_param:
+                          - ServiceNetMap
+                          - str_replace:
+                              template: "ROLENAMEMetricsQdrNetwork"
+                              params:
+                                ROLENAME: {get_param: RoleName}
                 principal:
                   str_replace:
                     template: "metrics-qdr/%{hiera('fqdn_NETWORK')}"
                     params:
-                      NETWORK: {get_param: [ServiceNetMap, MetricsQdrNetwork]}
+                      NETWORK:
+                        get_param:
+                          - ServiceNetMap
+                          - str_replace:
+                              template: "ROLENAMEMetricsQdrNetwork"
+                              params:
+                                ROLENAME: {get_param: RoleName}
               tripleo::profile::base::metrics::qdr::ssl_profiles:
                 list_concat:
                   - get_param: MetricsQdrSSLProfiles
@@ -229,12 +252,23 @@ outputs:
                       keyFile: '/etc/pki/tls/private/metrics_qdr.key'
                       caCertFile: {get_param: InternalTLSCAFile}
             - tripleo::profile::base::metrics::qdr::ssl_profiles: {get_param: MetricsQdrSSLProfiles}
+          - if:
+            - enable_stf
+            - tripleo::profile::base::metrics::qdr::interior_mesh_nodes: ''
+              tripleo::profile::base::metrics::qdr::router_mode: edge
+            - null
       metadata_settings:
         if:
           - internal_tls_enabled
           -
             - service: metrics-qdr
-              network: {get_param: [ServiceNetMap, MetricsQdrNetwork]}
+              network:
+                get_param:
+                  - ServiceNetMap
+                  - str_replace:
+                      template: "ROLENAMEMetricsQdrNetwork"
+                      params:
+                        ROLENAME: {get_param: RoleName}
               type: node
           - null
       # BEGIN DOCKER SETTINGS
@@ -292,7 +326,7 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/metrics-qdr.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/metrics-qdr/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/metrics-qdr:/var/lib/kolla/config_files/src:ro
                   - /var/lib/metrics-qdr:/var/lib/qdrouterd:z
                   - /var/log/containers/metrics-qdr:/var/log/qdrouterd:z
                 - if:
@@ -314,12 +348,5 @@ outputs:
             state: directory
             setype: "{{ item.setype }}"
           with_items:
-            - { 'path': /var/log/containers/metrics-qdr, 'setype': svirt_sandbox_file_t }
+            - { 'path': /var/log/containers/metrics-qdr, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/lib/metrics-qdr, 'setype': svirt_sandbox_file_t }
-        - name: qrouterd logs readme
-          copy:
-            dest: /var/log/qrouterd/readme-metrics.txt
-            content: |
-              Log files from metrics qrouterd containers can be found under
-              /var/log/containers/metrics-qdr.
-          ignore_errors: true

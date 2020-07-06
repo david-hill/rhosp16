@@ -126,6 +126,20 @@ outputs:
     description: Role data for the swift proxy.
     value:
       service_name: swift_proxy
+      keystone_resources:
+        swift:
+          endpoints:
+            public: {get_param: [EndpointMap, SwiftPublic, uri]}
+            internal: {get_param: [EndpointMap, SwiftInternal, uri]}
+            admin: {get_param: [EndpointMap, SwiftAdmin, uri]}
+          users:
+            swift:
+              password: {get_param: SwiftPassword}
+          region: {get_param: KeystoneRegion}
+          service: 'object-store'
+          roles:
+            - swiftoperator
+            - ResellerAdmin
       monitoring_subscription: {get_param: MonitoringSubscriptionSwiftProxy}
       config_settings:
         map_merge:
@@ -253,22 +267,6 @@ outputs:
                     "%{hiera('$NETWORK')}"
                   params:
                     $NETWORK: {get_param: [ServiceNetMap, SwiftProxyNetwork]}
-      service_config_settings:
-        keystone:
-          swift::keystone::auth::public_url: {get_param: [EndpointMap, SwiftPublic, uri]}
-          swift::keystone::auth::internal_url: {get_param: [EndpointMap, SwiftInternal, uri]}
-          swift::keystone::auth::admin_url: {get_param: [EndpointMap, SwiftAdmin, uri]}
-          swift::keystone::auth::public_url_s3: {get_param: [EndpointMap, SwiftS3Public, uri]}
-          swift::keystone::auth::internal_url_s3: {get_param: [EndpointMap, SwiftS3Internal, uri]}
-          swift::keystone::auth::admin_url_s3: {get_param: [EndpointMap, SwiftS3Admin, uri]}
-          swift::keystone::auth::password: {get_param: SwiftPassword}
-          swift::keystone::auth::region: {get_param: KeystoneRegion}
-          swift::keystone::auth::tenant: 'service'
-          swift::keystone::auth::configure_s3_endpoint: false
-          swift::keystone::auth::operator_roles:
-            - admin
-            - swiftoperator
-            - ResellerAdmin
       # BEGIN DOCKER SETTINGS
       puppet_config:
         config_volume: swift
@@ -403,7 +401,7 @@ outputs:
                     - {get_attr: [ContainersCommon, volumes]}
                     -
                       - /var/lib/kolla/config_files/swift_proxy.json:/var/lib/kolla/config_files/config.json:ro
-                      - /var/lib/config-data/puppet-generated/swift/:/var/lib/kolla/config_files/src:ro
+                      - /var/lib/config-data/puppet-generated/swift:/var/lib/kolla/config_files/src:ro
                       - /run:/run
                       - /srv/node:/srv/node
                       - /dev:/dev
@@ -422,7 +420,7 @@ outputs:
                         - {get_attr: [ContainersCommon, volumes]}
                         -
                           - /var/lib/kolla/config_files/swift_proxy_tls_proxy.json:/var/lib/kolla/config_files/config.json:ro
-                          - /var/lib/config-data/puppet-generated/swift/:/var/lib/kolla/config_files/src:ro
+                          - /var/lib/config-data/puppet-generated/swift:/var/lib/kolla/config_files/src:ro
                           - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
                           - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
                     environment:
@@ -437,7 +435,7 @@ outputs:
           with_items:
             - { 'path': /srv/node, 'setype': svirt_sandbox_file_t }
             - { 'path': /var/log/swift, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/containers/swift, 'setype': svirt_sandbox_file_t }
+            - { 'path': /var/log/containers/swift, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
       deploy_steps_tasks:
         - name: Configure rsyslog for swift-proxy
           when: step|int == 1
@@ -481,7 +479,7 @@ outputs:
           block:
             - name: Check if swift-proxy or swift-object-expirer are deployed
               command: systemctl is-enabled --quiet "{{ item }}"
-              ignore_errors: True
+              failed_when: false
               register: swift_proxy_services_enabled_result
               with_items:
                 - openstack-swift-proxy

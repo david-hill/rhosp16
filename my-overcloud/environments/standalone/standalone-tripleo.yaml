@@ -40,6 +40,10 @@ parameter_defaults:
   # Type: comma_delimited_list
   NtpServer: ['0.pool.ntp.org', '1.pool.ntp.org', '2.pool.ntp.org', '3.pool.ntp.org']
 
+  # How the server should receive the metadata required for software configuration.
+  # Type: string
+  SoftwareConfigTransport: POLL_SERVER_HEAT
+
   # Set this to true to open up ssh access from all sources.
   # Type: boolean
   SshFirewallAllowAll: True
@@ -52,7 +56,6 @@ resource_registry:
   OS::TripleO::Network::Ports::ControlPlaneVipPort: ../../deployed-server/deployed-neutron-port.yaml
   OS::TripleO::Network::Ports::RedisVipPort: ../../network/ports/noop.yaml
   OS::TripleO::Network::Ports::OVNDBsVipPort: ../../network/ports/noop.yaml
-  OS::TripleO::NodeExtraConfigPost: ../../extraconfig/post_deploy/standalone_post.yaml
   OS::TripleO::Services::AodhApi: OS::Heat::None
   OS::TripleO::Services::AodhEvaluator: OS::Heat::None
   OS::TripleO::Services::AodhListener: OS::Heat::None

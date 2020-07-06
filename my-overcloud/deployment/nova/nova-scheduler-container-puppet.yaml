@@ -182,7 +182,7 @@ outputs:
                 - {get_attr: [NovaLogging, volumes]}
                 -
                   - /var/lib/kolla/config_files/nova_scheduler.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/nova/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/nova:/var/lib/kolla/config_files/src:ro
                   - /run:/run
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
@@ -204,7 +204,7 @@ outputs:
               delay: 30
               until: nova_scheduler_healthcheck_state.status.ExecMainPID != '0' and
                 nova_scheduler_healthcheck_state.status.ActiveState in ['inactive', 'failed']
-              ignore_errors: yes
+              failed_when: false
             - name: Fail if nova-scheduler healthcheck report failed status
               fail:
                 msg: nova-scheduler isn't working (healthcheck failed)
@@ -224,7 +224,7 @@ outputs:
           block:
             - name: Check if nova_scheduler is deployed
               command: systemctl is-enabled --quiet openstack-nova-scheduler
-              ignore_errors: True
+              failed_when: false
               register: nova_scheduler_enabled_result
             - name: Set fact nova_scheduler_enabled
               set_fact:
