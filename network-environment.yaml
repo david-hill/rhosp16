@@ -1,7 +1,7 @@
 resource_registry:
 #  OS::TripleO::BlockStorage::Net::SoftwareConfig: /home/stack/rhosp16/my-overcloud/network/config/single-nic-vlans/cinder-storage.yaml
-  OS::TripleO::Compute::Net::SoftwareConfig: /home/stack/rhosp16/my-overcloud/network/config/single-nic-vlans/controller.yaml
-  OS::TripleO::Controller::Net::SoftwareConfig: /home/stack/rhosp16/my-overcloud/network/config/single-nic-vlans/controller.yaml
+  OS::TripleO::Compute::Net::SoftwareConfig: /home/stack/rhosp16/my-overcloud/network/config/single-nic-vlans/controller-custom.yaml
+  OS::TripleO::Controller::Net::SoftwareConfig: /home/stack/rhosp16/my-overcloud/network/config/single-nic-vlans/controller-custom.yaml
 #  OS::TripleO::ObjectStorage::Net::SoftwareConfig: /home/stack/rhosp16/my-overcloud/network/config/single-nic-vlans/swift-storage.yaml
   OS::TripleO::CephStorage::Net::SoftwareConfig: /home/stack/rhosp16/my-overcloud/network/config/single-nic-vlans/ceph-storage.yaml
   OS::TripleO::NodeUserData: /home/stack/rhosp16/my-overcloud/swap.yaml
