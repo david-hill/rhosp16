@@ -20,7 +20,7 @@ resource_registry:
 
   # With using default template values, the Compute nodes also need the br-ex
   # bridge to be connected to a physical network.
-  OS::TripleO::Compute::Net::SoftwareConfig: ../net-config-bridge.yaml
+  #  OS::TripleO::Compute::Net::SoftwareConfig: ../net-config-bridge.yaml
 
   # Disable OVN services
   OS::TripleO::Services::OVNController: OS::Heat::None
