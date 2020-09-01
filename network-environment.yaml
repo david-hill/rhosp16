@@ -37,3 +37,8 @@ parameter_defaults:
     nova::compute::reserved_host_memory: 512
   ComputeCount: 2
   ControllerCount: 3
+  OvercloudCephStorageFlavor: ceph-storage
+  OvercloudSwiftStorageFlavor: swift-storage
+  OvercloudBlockStorageFlavor: block-storage
+  OvercloudControllerFlavor: control
+  OvercloudComputeFlavor: compute
