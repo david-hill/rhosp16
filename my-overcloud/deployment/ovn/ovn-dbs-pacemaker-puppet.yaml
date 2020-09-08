@@ -190,28 +190,8 @@ outputs:
           - null
       docker_config:
         step_3:
-          ovn_dbs_restart_bundle:
-            start_order: 0
-            config_volume: ovn_dbs
-            detach: false
-            net: host
-            ipc: host
-            user: root
-            environment:
-              TRIPLEO_MINOR_UPDATE: ''
-            command: /pacemaker_restart_bundle.sh ovn-dbs-bundle ovn_dbs
-            image: {get_param: ContainerOvnDbsConfigImage}
-            volumes:
-              list_concat:
-                - {get_attr: [ContainersCommon, pacemaker_restart_volumes]}
-                - if:
-                  - internal_tls_enabled
-                  -
-                    - /etc/pki/tls/certs/ovn_dbs.crt:/etc/pki/tls/certs/ovn_dbs.crt:ro
-                    - /etc/pki/tls/private/ovn_dbs.key:/etc/pki/tls/private/ovn_dbs.key:ro
-                  - null
           ovn_dbs_init_bundle:
-            start_order: 1
+            start_order: 0
             detach: false
             net: host
             ipc: host
@@ -245,6 +225,26 @@ outputs:
               # NOTE: this should force this container to re-run on each
               # update (scale-out, etc.)
               TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+          ovn_dbs_restart_bundle:
+            start_order: 1
+            config_volume: ovn_dbs
+            detach: false
+            net: host
+            ipc: host
+            user: root
+            environment:
+              TRIPLEO_MINOR_UPDATE: ''
+            command: /pacemaker_restart_bundle.sh ovn_dbs ovndb_servers ovn-dbs-bundle Slave Master
+            image: {get_param: ContainerOvnDbsConfigImage}
+            volumes:
+              list_concat:
+                - {get_attr: [ContainersCommon, pacemaker_restart_volumes]}
+                - if:
+                  - internal_tls_enabled
+                  -
+                    - /etc/pki/tls/certs/ovn_dbs.crt:/etc/pki/tls/certs/ovn_dbs.crt:ro
+                    - /etc/pki/tls/private/ovn_dbs.key:/etc/pki/tls/private/ovn_dbs.key:ro
+                  - null
       host_prep_tasks:
         - name: create persistent directories
           file:
@@ -252,16 +252,8 @@ outputs:
             state: directory
             setype: "{{ item.setype }}"
           with_items:
-            - { 'path': /var/log/containers/openvswitch, 'setype': svirt_sandbox_file_t }
+            - { 'path': /var/log/containers/openvswitch, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/lib/openvswitch/ovn, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/openvswitch, 'setype': openvswitch_log_t }
-        - name: openvswitch logs readme
-          copy:
-            dest: /var/log/openvswitch/readme.txt
-            content: |
-              Log files from openvswitch containers can be found under
-              /var/log/containers/openvswitch.
-          ignore_errors: true
       deploy_steps_tasks:
         - name: OVN DBS tag container image for pacemaker
           when: step|int == 1
@@ -462,3 +454,13 @@ outputs:
           when:
             - step|int == 3
           block: *ovn_dbs_fetch_retag_container_tasks
+
+      post_upgrade_tasks:
+        - name: Restart ovn-dbs service (pacemaker)
+          when:
+            - step|int == 1
+            - ovn_dbs_short_bootstrap_node_name|lower == ansible_hostname|lower
+          pacemaker_resource:
+            resource: ovn-dbs-bundle
+            state: restart
+            wait_for_resource: true

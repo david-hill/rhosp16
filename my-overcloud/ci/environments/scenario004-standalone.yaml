@@ -35,8 +35,6 @@ resource_registry:
 parameter_defaults:
   ManagePolling: true
   Debug: true
-  # fetch dir needed for standalone
-  LocalCephAnsibleFetchDirectoryBackup: /var/lib/ceph_ansible_fetch
   CephAnsibleDisksConfig:
     osd_objectstore: bluestore
     osd_scenario: lvm
@@ -64,6 +62,7 @@ parameter_defaults:
   CephAdminKey: 'AQDLOh1VgEp6FRAAFzT7Zw+Y9V6JJExQAsRnRQ=='
   CephClientKey: 'AQC+vYNXgDAgAhAAc8UoYt+OTz5uhV7ItLdwUw=='
   CephAnsiblePlaybookVerbosity: 1
+  CephAnsibleRepo: "tripleo-centos-ceph-nautilus"
   CephAnsibleEnvironmentVariables:
     ANSIBLE_SSH_RETRIES: '4'
     DEFAULT_FORKS: '3'

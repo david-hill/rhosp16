@@ -43,11 +43,6 @@ parameters:
   EnableInternalTLS:
     type: boolean
     default: false
-  InternalTLSCAFile:
-    default: '/etc/ipa/ca.crt'
-    type: string
-    description: Specifies the default CA cert to use if TLS is used for
-                 services in the internal network.
   RabbitUserName:
     default: guest
     description: The username for RabbitMQ
@@ -128,6 +123,7 @@ outputs:
                   - 4369
                   - 5672
                   - 25672
+                  - 25673-25683
             rabbitmq::delete_guest_user: false
             rabbitmq::wipe_db_on_cookie_change: true
             rabbitmq::port: 5672
@@ -146,6 +142,8 @@ outputs:
               RABBITMQ_NODENAME: "rabbit@%{::hostname}"
               RABBITMQ_SERVER_ERL_ARGS: '"+K true +P 1048576 -kernel inet_default_connect_options [{nodelay,true}]"'
               RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: {get_param: RabbitAdditionalErlArgs}
+              RABBITMQ_CTL_DIST_PORT_MIN: '25673'
+              RABBITMQ_CTL_DIST_PORT_MAX: '25683'
               'export ERL_EPMD_ADDRESS': "%{hiera('rabbitmq::interface')}"
             rabbitmq_kernel_variables:
               inet_dist_listen_min: '25672'
@@ -275,17 +273,12 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/rabbitmq.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/rabbitmq/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/rabbitmq:/var/lib/kolla/config_files/src:ro
                   - /var/lib/rabbitmq:/var/lib/rabbitmq
                   - /var/log/containers/rabbitmq:/var/log/rabbitmq
                 - if:
                   - internal_tls_enabled
                   -
-                    - list_join:
-                      - ':'
-                      - - {get_param: InternalTLSCAFile}
-                        - {get_param: InternalTLSCAFile}
-                        - 'ro'
                     - /etc/pki/tls/certs/rabbitmq.crt:/var/lib/kolla/config_files/src-tls/etc/pki/tls/certs/rabbitmq.crt:ro
                     - /etc/pki/tls/private/rabbitmq.key:/var/lib/kolla/config_files/src-tls/etc/pki/tls/private/rabbitmq.key:ro
                   - null
@@ -315,17 +308,12 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/rabbitmq.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/rabbitmq/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/rabbitmq:/var/lib/kolla/config_files/src:ro
                   - /var/lib/rabbitmq:/var/lib/rabbitmq:z
                   - /var/log/containers/rabbitmq:/var/log/rabbitmq:z
                 - if:
                   - internal_tls_enabled
                   -
-                    - list_join:
-                      - ':'
-                      - - {get_param: InternalTLSCAFile}
-                        - {get_param: InternalTLSCAFile}
-                        - 'ro'
                     - /etc/pki/tls/certs/rabbitmq.crt:/var/lib/kolla/config_files/src-tls/etc/pki/tls/certs/rabbitmq.crt:ro
                     - /etc/pki/tls/private/rabbitmq.key:/var/lib/kolla/config_files/src-tls/etc/pki/tls/private/rabbitmq.key:ro
                   - null
@@ -356,16 +344,8 @@ outputs:
             state: directory
             setype: "{{ item.setype }}"
           with_items:
-            - { 'path': /var/log/containers/rabbitmq, 'setype': svirt_sandbox_file_t }
+            - { 'path': /var/log/containers/rabbitmq, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/lib/rabbitmq, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/rabbitmq, 'setype': svirt_sandbox_file_t }
-        - name: rabbitmq logs readme
-          copy:
-            dest: /var/log/rabbitmq/readme.txt
-            content: |
-              Log files from rabbitmq containers can be found under
-              /var/log/containers/rabbitmq.
-          ignore_errors: true
       # TODO: Removal of package
       upgrade_tasks: []
       update_tasks:

@@ -42,7 +42,6 @@
             - container_startup_configs
           when:
             - ansible_check_mode|bool
-          ignore_errors: true
           check_mode: no
 
         - name: Create /var/lib/tripleo-config/check-mode directory for check mode
@@ -98,7 +97,7 @@
           tags:
             - host_config
 
-        # Config file for our container-puppet.py script, used to generate container configs
+        # Puppet Containers Config directory used to generate container configs
         - name: Create /var/lib/container-puppet
           file:
             path: /var/lib/container-puppet
@@ -133,7 +132,6 @@
             state: absent
           tags:
             - container_config
-          ignore_errors: true
           check_mode: no
           when:
             - ansible_check_mode|bool

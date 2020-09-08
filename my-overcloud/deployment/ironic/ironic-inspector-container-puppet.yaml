@@ -181,6 +181,17 @@ outputs:
     description: Role data for the Ironic Inspector role.
     value:
       service_name: ironic_inspector
+      keystone_resources:
+        ironic-inspector:
+          endpoints:
+            public: {get_param: [EndpointMap, IronicInspectorPublic, uri]}
+            internal: {get_param: [EndpointMap, IronicInspectorInternal, uri]}
+            admin: {get_param: [EndpointMap, IronicInspectorAdmin, uri]}
+          users:
+            ironic-inspector:
+              password: {get_param: IronicPassword}
+          region: {get_param: KeystoneRegion}
+          service: 'baremetal-introspection'
       monitoring_subscription: {get_param: MonitoringSubscriptionIronicInspector}
       config_settings:
         map_merge:
@@ -304,13 +315,6 @@ outputs:
           - ironic::inspector::tftp_root: /var/lib/ironic/tftpboot
           - ironic::inspector::http_root: /var/lib/ironic/httpboot
       service_config_settings:
-        keystone:
-          ironic::keystone::auth_inspector::tenant: 'service'
-          ironic::keystone::auth_inspector::public_url: {get_param: [EndpointMap, IronicInspectorPublic, uri]}
-          ironic::keystone::auth_inspector::internal_url: {get_param: [EndpointMap, IronicInspectorInternal, uri]}
-          ironic::keystone::auth_inspector::admin_url: {get_param: [EndpointMap, IronicInspectorAdmin, uri]}
-          ironic::keystone::auth_inspector::password: {get_param: IronicPassword}
-          ironic::keystone::auth_inspector::region: {get_param: KeystoneRegion}
         mysql:
           ironic::inspector::db::mysql::password: {get_param: IronicPassword}
           ironic::inspector::db::mysql::user: ironic-inspector
@@ -438,7 +442,7 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/ironic_inspector.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/ironic_inspector/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/ironic_inspector:/var/lib/kolla/config_files/src:ro
                   - /var/lib/ironic:/var/lib/ironic:shared,z
                   - /var/log/containers/ironic-inspector:/var/log/ironic-inspector:z
                   - /var/lib/ironic-inspector/dhcp-hostsdir:/var/lib/ironic-inspector/dhcp-hostsdir:shared,z
@@ -458,7 +462,7 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/ironic_inspector_dnsmasq.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/ironic_inspector/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/ironic_inspector:/var/lib/kolla/config_files/src:ro
                   - /var/log/containers/ironic-inspector:/var/log/ironic-inspector:z
                   - /var/lib/ironic-inspector/dhcp-hostsdir:/var/lib/ironic-inspector/dhcp-hostsdir:shared,z
             environment:
@@ -470,15 +474,7 @@ outputs:
             state: directory
             setype: "{{ item.setype }}"
           with_items:
-            - { 'path': /var/log/containers/ironic-inspector, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/ironic-inspector, 'setype': svirt_sandbox_file_t }
-        - name: ironic-inspector logs readme
-          copy:
-            dest: /var/log/ironic-inspector/readme.txt
-            content: |
-              Log files from ironic-inspector container can be found under
-              /var/log/containers/ironic-inspector.
-          ignore_errors: true
+            - { 'path': /var/log/containers/ironic-inspector, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
         - name: create persistent ironic-inspector dnsmasq dhcp hostsdir
           file:
             path: /var/lib/ironic-inspector/dhcp-hostsdir

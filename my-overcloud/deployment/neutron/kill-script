@@ -63,7 +63,7 @@ if [ -f /proc/$PID/cgroup ]; then
       kill_container $CT_NAME $CT_ID
       ;;
     15)
-      signal_container $CT_NAME $CT_ID
+      signal_container $CT_NAME $CT_ID 15
       ;;
     *)
       add_date "Unknown action ${SIG} for ${CT_NAME} ${CT_ID}"

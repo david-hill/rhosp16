@@ -87,7 +87,12 @@ parameters:
     default: 'false'
     description: Set to true to skip the update all packages
     type: boolean
-
+  SkipRhelEnforcement:
+    default: "false"
+    description: Whether to avoid or not RHEL/OSP policies enforcement on Red Hat.
+                 Mainly for CI purpose.  It shouldn't matter on other distributions
+                 where it's disabled in the role. Set to true to skip the enforcement.
+    type: string
 
 outputs:
   role_data:
@@ -154,12 +159,17 @@ outputs:
             # but doesn't want to reboot, they can run with
             # `--skip-tags system_upgrade_reboot`.
             - system_upgrade_reboot
-          when: step|int == 4
+          when:
+            - step|int == 4
+            - upgrade_leapp_enabled
           block:
             - name: reboot to perform the upgrade
               reboot:
                 reboot_timeout: "{{upgrade_leapp_reboot_timeout}}"
-              when: upgrade_leapp_enabled
+            - name: Clear gathered facts from all currently targeted hosts
+              meta: clear_facts
+            - name: Force facts refresh after OS upgrade to refresh cache.
+              setup:
 
         - name: Package and repo update tasks
           when: step|int == 0
@@ -189,6 +199,7 @@ outputs:
                   - pcs
                   - puppet-tripleo
                   - python3-heat-agent*
+                  - rsync
                 state: present
               when: ansible_distribution_major_version == '8'
         # With the layered product packaging, the key package is rhosp-openvswitch. It depends on
@@ -235,7 +246,7 @@ outputs:
                 set -o pipefail
                 yum info -q rhosp-openvswitch | awk '/^Version/{print $NF}'
               register: rhosp_package_result
-              ignore_errors: true
+              failed_when: false
             - name: Set fact for triggering OpenvSwitch layered product package handling
               set_fact:
                 ovs_lp_packaging: "{{ rhosp_package_result.rc == 0 }}"
@@ -289,13 +300,13 @@ outputs:
           block:
             - name: check if an upgrade is required
               register: ovs_need_upgrade
-              ignore_errors: true
+              failed_when: false
               shell: |
                 yum check-upgrade openvswitch | awk '/openvswitch/{print}'
             - name: Check openvswitch packaging.
               shell: rpm -q --scripts openvswitch | awk '/postuninstall/,/*/' | grep -q "systemctl.*try-restart"
               register: ovs_packaging_issue
-              ignore_errors: true
+              failed_when: false
         - name: Upgrade openvswitch
           block:
             - name: "Ensure empty directory: emptying."
@@ -326,7 +337,7 @@ outputs:
           when:
             - step|int == 2
             - run_ovs_update|bool
-            - ovs_packaging_issue|default(false)|succeeded
+            - ovs_packaging_issue.rc == 0 | default(false)
             - ovs_need_upgrade.stdout|default('')
         - name: Install libibverbs (https://bugs.launchpad.net/tripleo/+bug/1817743)
           when: step|int == 2
@@ -350,7 +361,7 @@ outputs:
         - name: Check that os-net-config has configuration
           shell: test -s /etc/os-net-config/config.json
           register: os_net_config_has_config
-          ignore_errors: True
+          failed_when: false
           when: step|int == 3
         - block:
             - name: Upgrade os-net-config
@@ -393,6 +404,15 @@ outputs:
                 name: tripleo-transfer
                 tasks_from: cleanup.yml
       update_tasks:
+        - name: Enforce RHOSP rules regarding subscription.
+          include_role:
+            name: tripleo-redhat-enforce
+          vars:
+            skip_rhel_enforcement: {get_param: SkipRhelEnforcement}
+          when:
+            - step|int == 0
+            - ansible_distribution == 'RedHat'
+            - not (skip_rhel_enforcement | bool)
         - name: Check for existing yum.pid
           stat:  path=/var/run/yum.pid
           register: yum_pid_file

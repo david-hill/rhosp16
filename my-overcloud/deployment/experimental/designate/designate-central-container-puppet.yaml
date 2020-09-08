@@ -177,7 +177,7 @@ outputs:
                 -
                   - /run:/run
                   - /var/lib/kolla/config_files/designate_central.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/designate/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/designate:/var/lib/kolla/config_files/src:ro
                   - /var/log/containers/designate:/var/log/designate:z
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
@@ -202,12 +202,4 @@ outputs:
             state: directory
             setype: "{{ item.setype }}"
           with_items:
-            - { 'path': /var/log/containers/designate, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/designate, 'setype': svirt_sandbox_file_t }
-        - name: designate logs readme
-          copy:
-            dest: /var/log/designate/readme.txt
-            content: |
-              Log files from designate containers can be found under
-              /var/log/containers/designate.
-          ignore_errors: true
+            - { 'path': /var/log/containers/designate, 'setype': svirt_sandbox_file_t, 'mode': '0750' }

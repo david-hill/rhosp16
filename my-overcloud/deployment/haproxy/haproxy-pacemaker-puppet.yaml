@@ -250,23 +250,8 @@ outputs:
       container_config_scripts: {get_attr: [ContainersCommon, container_config_scripts]}
       docker_config:
         step_2:
-          haproxy_restart_bundle:
-            start_order: 2
-            detach: false
-            net: host
-            ipc: host
-            user: root
-            config_volume: haproxy
-            environment:
-              TRIPLEO_MINOR_UPDATE: ''
-            command: /pacemaker_restart_bundle.sh haproxy-bundle haproxy
-            image: {get_param: ContainerHAProxyImage}
-            volumes:
-              list_concat:
-                - {get_attr: [ContainersCommon, pacemaker_restart_volumes]}
-                - - /var/lib/config-data/puppet-generated/haproxy/:/var/lib/kolla/config_files/src:ro
           haproxy_init_bundle:
-            start_order: 3
+            start_order: 2
             detach: false
             net: host
             ipc: host
@@ -297,22 +282,30 @@ outputs:
               # NOTE: this should force this container to re-run on each
               # update (scale-out, etc.)
               TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+          haproxy_restart_bundle:
+            start_order: 3
+            detach: false
+            net: host
+            ipc: host
+            user: root
+            config_volume: haproxy
+            environment:
+              TRIPLEO_MINOR_UPDATE: ''
+            command: /pacemaker_restart_bundle.sh haproxy haproxy-bundle haproxy-bundle Started
+            image: {get_param: ContainerHAProxyImage}
+            volumes:
+              list_concat:
+                - {get_attr: [ContainersCommon, pacemaker_restart_volumes]}
+                - - /var/lib/config-data/puppet-generated/haproxy:/var/lib/kolla/config_files/src:ro
       host_prep_tasks:
         - {get_attr: [HAProxyBase, role_data, host_prep_tasks]}
-        - name: haproxy logs readme
-          copy:
-            dest: /var/log/haproxy/readme.txt
-            content: |
-              Log files from the haproxy containers can be found under
-              /var/log/containers/haproxy.
-          ignore_errors: true
         - name: create persistent directories
           file:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
           with_items:
-            - { 'path': /var/log/containers/haproxy, 'setype': var_log_t }
+            - { 'path': /var/log/containers/haproxy, 'setype': var_log_t, 'mode': '0750' }
             - { 'path': /var/lib/haproxy, 'setype': svirt_sandbox_file_t }
             - { 'path': /var/log/haproxy, 'setype': svirt_sandbox_file_t }
       metadata_settings:
@@ -385,7 +378,7 @@ outputs:
           block:
             - name: Check haproxy public certificate configuration in pacemaker
               command: cibadmin --query --xpath "//storage-mapping[@id='haproxy-cert']"
-              ignore_errors: true
+              failed_when: false
               register: haproxy_cert_mounted
             - name: Disable the haproxy cluster resource
               pacemaker_resource:
@@ -496,11 +489,11 @@ outputs:
               block:
                 - name: Check haproxy stats socket configuration in pacemaker
                   command: cibadmin --query --xpath "//storage-mapping[@id='haproxy-var-lib']"
-                  ignore_errors: true
+                  failed_when: false
                   register: haproxy_stats_exposed
                 - name: Check haproxy public certificate configuration in pacemaker
                   command: cibadmin --query --xpath "//storage-mapping[@id='haproxy-cert']"
-                  ignore_errors: true
+                  failed_when: false
                   register: haproxy_cert_mounted
                 - name: Add a bind mount for stats socket in the haproxy bundle
                   command: pcs resource bundle update haproxy-bundle storage-map add id=haproxy-var-lib source-dir=/var/lib/haproxy target-dir=/var/lib/haproxy options=rw

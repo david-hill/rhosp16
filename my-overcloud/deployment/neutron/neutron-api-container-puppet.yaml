@@ -94,6 +94,10 @@ parameters:
     description: Enable Neutron DVR.
     default: ''
     type: string
+  NeutronEnableIgmpSnooping:
+    description: Enable IGMP Snooping.
+    type: boolean
+    default: false
   KeystoneRegion:
     type: string
     default: 'regionOne'
@@ -224,6 +228,17 @@ outputs:
     description: Role data for the Neutron API role.
     value:
       service_name: neutron_api
+      keystone_resources:
+        neutron:
+          endpoints:
+            public: {get_param: [EndpointMap, NeutronPublic, uri]}
+            internal: {get_param: [EndpointMap, NeutronInternal, uri]}
+            admin: {get_param: [EndpointMap, NeutronAdmin, uri]}
+          users:
+            neutron:
+              password: {get_param: NeutronPassword}
+          region: {get_param: KeystoneRegion}
+          service: 'network'
       monitoring_subscription: {get_param: MonitoringSubscriptionNeutronServer}
       config_settings:
         map_merge:
@@ -246,6 +261,7 @@ outputs:
             neutron::keystone::authtoken::auth_url: {get_param: [EndpointMap, KeystoneInternal, uri_no_suffix]}
             neutron::server::allow_automatic_l3agent_failover: {get_param: NeutronAllowL3AgentFailover}
             neutron::server::enable_proxy_headers_parsing: true
+            neutron::server::igmp_snooping_enable: {get_param: NeutronEnableIgmpSnooping}
             neutron::keystone::authtoken::password: {get_param: NeutronPassword}
             neutron::server::notifications::auth_url: { get_param: [ EndpointMap, KeystoneInternal, uri_no_suffix ] }
             neutron::server::notifications::tenant_name: 'service'
@@ -371,13 +387,6 @@ outputs:
         rsyslog:
           tripleo_logging_sources_neutron_api:
             - {get_param: NeutronApiLoggingSource}
-        keystone:
-          neutron::keystone::auth::tenant: 'service'
-          neutron::keystone::auth::public_url: {get_param: [EndpointMap, NeutronPublic, uri]}
-          neutron::keystone::auth::internal_url: { get_param: [ EndpointMap, NeutronInternal, uri ] }
-          neutron::keystone::auth::admin_url: { get_param: [ EndpointMap, NeutronAdmin, uri ] }
-          neutron::keystone::auth::password: {get_param: NeutronPassword}
-          neutron::keystone::auth::region: {get_param: KeystoneRegion}
         mysql:
           neutron::db::mysql::password: {get_param: NeutronPassword}
           neutron::db::mysql::user: neutron
@@ -476,7 +485,7 @@ outputs:
                     - {get_param: NeutronApiOptVolumes}
                     -
                       - /var/lib/kolla/config_files/neutron_api.json:/var/lib/kolla/config_files/config.json:ro
-                      - /var/lib/config-data/puppet-generated/neutron/:/var/lib/kolla/config_files/src:ro
+                      - /var/lib/config-data/puppet-generated/neutron:/var/lib/kolla/config_files/src:ro
                     - if:
                       - ovn_and_tls
                       -
@@ -500,7 +509,7 @@ outputs:
                         - {get_attr: [NeutronLogging, volumes]}
                         -
                           - /var/lib/kolla/config_files/neutron_server_tls_proxy.json:/var/lib/kolla/config_files/config.json:ro
-                          - /var/lib/config-data/puppet-generated/neutron/:/var/lib/kolla/config_files/src:ro
+                          - /var/lib/config-data/puppet-generated/neutron:/var/lib/kolla/config_files/src:ro
                           - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
                           - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
                     environment:
@@ -538,7 +547,7 @@ outputs:
           block:
             - name: Check if neutron_server is deployed
               command: systemctl is-enabled --quiet neutron-server
-              ignore_errors: True
+              failed_when: false
               register: neutron_server_enabled_result
             - name: Set fact neutron_server_enabled
               set_fact:
@@ -561,7 +570,7 @@ outputs:
               package: name=python-networking-odl state=latest
               # package python-networking-cisco may or may not be present
             - name: Networking cisco db sync workaround
-              ignore_errors: true
+              failed_when: false
               package: name=python-networking-cisco state=latest
         - name: Neutron db sync
           command: neutron-db-manage upgrade head

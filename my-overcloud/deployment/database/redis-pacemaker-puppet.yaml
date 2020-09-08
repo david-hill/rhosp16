@@ -217,23 +217,8 @@ outputs:
       docker_config:
         step_2:
           map_merge:
-            - redis_restart_bundle:
-                start_order: 1
-                config_volume: redis
-                detach: false
-                net: host
-                ipc: host
-                user: root
-                environment:
-                  TRIPLEO_MINOR_UPDATE: ''
-                command: /pacemaker_restart_bundle.sh redis-bundle redis
-                image: {get_param: ContainerRedisConfigImage}
-                volumes:
-                  list_concat:
-                    - {get_attr: [ContainersCommon, pacemaker_restart_volumes]}
-                    - - /var/lib/config-data/puppet-generated/redis/:/var/lib/kolla/config_files/src:ro
             - redis_init_bundle:
-                start_order: 2
+                start_order: 1
                 detach: false
                 net: host
                 ipc: host
@@ -261,6 +246,21 @@ outputs:
                   # NOTE: this should force this container to re-run on each
                   # update (scale-out, etc.)
                   TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+            - redis_restart_bundle:
+                start_order: 2
+                config_volume: redis
+                detach: false
+                net: host
+                ipc: host
+                user: root
+                environment:
+                  TRIPLEO_MINOR_UPDATE: ''
+                command: /pacemaker_restart_bundle.sh redis redis redis-bundle Slave Master
+                image: {get_param: ContainerRedisConfigImage}
+                volumes:
+                  list_concat:
+                    - {get_attr: [ContainersCommon, pacemaker_restart_volumes]}
+                    - - /var/lib/config-data/puppet-generated/redis:/var/lib/kolla/config_files/src:ro
             - if:
                 - internal_tls_enabled
                 - redis_tls_proxy:
@@ -274,7 +274,7 @@ outputs:
                         - {get_attr: [ContainersCommon, volumes]}
                         -
                           - /var/lib/kolla/config_files/redis_tls_proxy.json:/var/lib/kolla/config_files/config.json:ro
-                          - /var/lib/config-data/puppet-generated/redis/:/var/lib/kolla/config_files/src:ro
+                          - /var/lib/config-data/puppet-generated/redis:/var/lib/kolla/config_files/src:ro
                           - /etc/pki/tls/certs/redis.crt:/var/lib/kolla/config_files/src-tls/etc/pki/tls/certs/redis.crt:ro
                           - /etc/pki/tls/private/redis.key:/var/lib/kolla/config_files/src-tls/etc/pki/tls/private/redis.key:ro
                     environment:
@@ -290,21 +290,13 @@ outputs:
             setype: "{{ item.setype }}"
           with_items:
             - { 'path': /var/lib/redis, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/containers/redis, 'setype': svirt_sandbox_file_t }
+            - { 'path': /var/log/containers/redis, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/run/redis, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/redis, 'setype': svirt_sandbox_file_t }
         - name: ensure /var/run/redis is present upon reboot
           copy:
             dest: /etc/tmpfiles.d/var-run-redis.conf
             content: |
               d /var/run/redis 0755 root root - -
-        - name: redis logs readme
-          copy:
-            dest: /var/log/redis/readme.txt
-            content: |
-              Log files from redis containers can be found under
-              /var/log/containers/redis.
-          ignore_errors: true
       deploy_steps_tasks:
         - name: Redis tag container image for pacemaker
           when: step|int == 1
@@ -395,7 +387,7 @@ outputs:
               block:
                 - name: Check redis logging configuration in pacemaker
                   command: cibadmin --query --xpath "//storage-mapping[@id='redis-log' and @source-dir='/var/log/containers/redis']"
-                  ignore_errors: true
+                  failed_when: false
                   register: redis_logs_moved
                 - name: Change redis logging configuration in pacemaker
                   # rc == 6 means the configuration doesn't exist in the CIB
@@ -471,7 +463,7 @@ outputs:
                 resource: {get_attr: [RedisBase, role_data, service_name]}
                 state: show
                 check_mode: false
-              ignore_errors: true
+              failed_when: false
               register: redis_res_result
             - name: Set fact redis_res
               set_fact:

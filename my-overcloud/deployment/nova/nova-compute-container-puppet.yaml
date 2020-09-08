@@ -81,6 +81,8 @@ parameters:
     description: The Ceph client key. Can be created with ceph-authtool --gen-print-key.
     type: string
     hidden: true
+    constraints:
+    - allowed_pattern: "^[a-zA-Z0-9+/]{38}==$"
   CephClusterFSID:
     type: string
     description: The Ceph cluster FSID. Must be a UUID.
@@ -740,19 +742,13 @@ outputs:
             image: &nova_compute_image {get_param: ContainerNovaComputeImage}
             net: none
             user: root
+            security_opt: label=disable
             privileged: false
             detach: false
             volumes:
-              list_concat:
-                # podman fails to relable if nova_nfs_enabled where we have
-                # the nfs share mounted to /var/lib/nova/instances
-                -
-                  if:
-                  - nova_nfs_enabled
-                  - - /var/lib/nova:/var/lib/nova:shared
-                  - - /var/lib/nova:/var/lib/nova:shared,z
-                -
-                  - /var/lib/container-config-scripts/:/container-config-scripts/:z
+              - /var/lib/nova:/var/lib/nova:shared
+              - /var/lib/_nova_secontext:/var/lib/_nova_secontext:shared,z
+              - /var/lib/container-config-scripts/:/container-config-scripts/:z
             command: "/container-config-scripts/pyshim.sh /container-config-scripts/nova_statedir_ownership.py"
             environment:
               # NOTE: this should force this container to re-run on each
@@ -784,24 +780,18 @@ outputs:
                     - {get_param: NovaComputeOptVolumes}
                     -
                       - /var/lib/kolla/config_files/nova_compute.json:/var/lib/kolla/config_files/config.json:ro
-                      - /var/lib/config-data/puppet-generated/nova_libvirt/:/var/lib/kolla/config_files/src:ro
+                      - /var/lib/config-data/puppet-generated/nova_libvirt:/var/lib/kolla/config_files/src:ro
                       - /etc/iscsi:/var/lib/kolla/config_files/src-iscsid:ro
                       - /etc/ceph:/var/lib/kolla/config_files/src-ceph:ro
                       - /dev:/dev
                       - /lib/modules:/lib/modules:ro
                       - /run:/run
                       - /var/lib/iscsi:/var/lib/iscsi:z
-                      - /var/lib/libvirt:/var/lib/libvirt:shared,z
+                      - /var/lib/libvirt:/var/lib/libvirt:shared
                       - /sys/class/net:/sys/class/net
                       - /sys/bus/pci:/sys/bus/pci
                       - /boot:/boot:ro
-                    -
-                      # podman fails to relable if nova_nfs_enabled where we have
-                      # the nfs share mounted to /var/lib/nova/instances
-                      if:
-                      - nova_nfs_enabled
-                      - - /var/lib/nova:/var/lib/nova:shared
-                      - - /var/lib/nova:/var/lib/nova:shared,z
+                      - /var/lib/nova:/var/lib/nova:shared
                     -
                       if:
                       - {equals: [{get_param: MultipathdEnable}, true]}
@@ -840,7 +830,17 @@ outputs:
       host_prep_tasks:
         list_concat:
         - {get_attr: [NovaLogging, host_prep_tasks]}
-        - - name: Mount Nova NFS Share
+        - - name: create persistent directories
+            file:
+              path: "{{ item.path }}"
+              state: directory
+              setype: "{{ item.setype }}"
+            with_items:
+              - { 'path': /var/lib/nova, 'setype': svirt_sandbox_file_t }
+              - { 'path': /var/lib/_nova_secontext, 'setype': svirt_sandbox_file_t }
+              - { 'path': /var/lib/nova/instances, 'setype': svirt_sandbox_file_t }
+              - { 'path': /var/lib/libvirt, 'setype': svirt_sandbox_file_t }
+          - name: Mount Nova NFS Share
             vars:
               nfs_backend_enable: {get_attr: [RoleParametersValue, value, nfs_backend_enable]}
               nfs_share: {get_attr: [RoleParametersValue, value, nfs_share]}
@@ -856,18 +856,12 @@ outputs:
               - resume_guests_state_on_host_boot_enabled|bool
               - container_cli == 'docker'
             block:
-              - name: make sure libvirt-client is installed
-                when: resume_guests_state_on_host_boot_enabled|bool
-                package:
-                  name: libvirt-client
-                  state: present
               - name: libvirt-guests unit to stop nova_compute container before shutdown VMs
                 copy:
                   dest: /etc/systemd/system/libvirt-guests.service
                   content: |
                     [Unit]
                     Description=Suspend/Resume Running libvirt Guests
-                    Requires=virt-guest-shutdown.target
                     After=network.target
                     After=time-sync.target
                     After=virt-guest-shutdown.target
@@ -878,12 +872,12 @@ outputs:
                     Documentation=https://libvirt.org
 
                     [Service]
-                    EnvironmentFile=-/etc/sysconfig/libvirt-guests
+                    EnvironmentFile=-/var/lib/config-data/puppet-generated/nova_libvirt/etc/sysconfig/libvirt-guests
                     # Hack just call traditional service until we factor
                     # out the code
-                    ExecStart=/usr/libexec/libvirt-guests.sh start
+                    ExecStart=/bin/{{container_cli}} exec nova_libvirt /bin/sh -x /usr/libexec/libvirt-guests.sh start
                     ExecStop=/bin/{{container_cli}} stop nova_compute
-                    ExecStop=/usr/libexec/libvirt-guests.sh stop
+                    ExecStop=/bin/{{container_cli}}  exec nova_libvirt /bin/sh -x /usr/libexec/libvirt-guests.sh stop
                     Type=oneshot
                     RemainAfterExit=yes
                     StandardOutput=journal+console
@@ -895,7 +889,6 @@ outputs:
                 systemd:
                   name: libvirt-guests
                   enabled: yes
-                  state: started
                   daemon_reload: yes
           - name: install tripleo_nova_libvirt_guests systemd unit file (podman)
             when:
@@ -906,7 +899,6 @@ outputs:
                 systemd:
                   name: libvirt-guests
                   enabled: no
-                  state: stopped
                   masked: yes
                   daemon_reload: yes
               - name: libvirt-guests unit to stop nova_compute container before shutdown VMs
@@ -938,15 +930,6 @@ outputs:
                   name: tripleo_nova_libvirt_guests
                   enabled: yes
                   daemon_reload: yes
-          - name: create persistent directories
-            file:
-              path: "{{ item.path }}"
-              state: directory
-              setype: "{{ item.setype }}"
-            with_items:
-              - { 'path': /var/lib/nova, 'setype': svirt_sandbox_file_t }
-              - { 'path': /var/lib/nova/instances, 'setype': svirt_sandbox_file_t }
-              - { 'path': /var/lib/libvirt, 'setype': svirt_sandbox_file_t }
           - name: ensure ceph configurations exist
             file:
               path: /etc/ceph
@@ -1000,7 +983,9 @@ outputs:
             # in the system, we use:
             - name: delete PageKSM after disable ksm on compute
               command: echo 2 >/sys/kernel/mm/ksm/run
-              when: ksmdisabled.changed
+              when:
+                - "'ksm.service' in ansible_facts.services"
+                - ksmdisabled is changed
           - name: enable KSM on compute
             when: compute_ksm_enabled|bool
             block:
@@ -1009,16 +994,26 @@ outputs:
             # mschuppert: we can remove the CentOS/RHEL split here when CentOS8/
             # RHEL8 is available and we have the same package name providing the
             # KSM services
-            - name: make sure package providing ksmtuned is installed (CentOS)
+            - name: make sure package providing ksmtuned is installed (CentOS7)
               package:
                 name: qemu-kvm-common-ev
                 state: present
-              when: ansible_distribution == 'CentOS'
-            - name: make sure package providing ksmtuned is installed (RHEL)
+              when:
+                - ansible_distribution == 'CentOS'
+                - ansible_distribution_major_version == '7'
+            - name: make sure package providing ksmtuned is installed (RHEL7)
               package:
                 name: qemu-kvm-common-rhev
                 state: present
-              when: ansible_distribution == 'RedHat'
+              when:
+                - ansible_distribution == 'RedHat'
+                - ansible_distribution_major_version == '7'
+            - name: make sure package providing ksmtuned is installed (RHEL8 or CentOS8)
+              package:
+                name: qemu-kvm-common
+                state: present
+              when:
+                - ansible_distribution_major_version == '8'
             - name: enable ksmtunded
               service:
                 name: "{{ item }}"
@@ -1045,7 +1040,7 @@ outputs:
               delay: 30
               until: nova_compute_healthcheck_state.status.ExecMainPID != '0' and
                 nova_compute_healthcheck_state.status.ActiveState in ['inactive', 'failed']
-              ignore_errors: yes
+              failed_when: false
             - name: Fail if nova-compute healthcheck report failed status
               fail:
                 msg: nova-compute isn't working (healthcheck failed)
@@ -1058,7 +1053,7 @@ outputs:
               - openstack-nova-compute
               - python-nova
             state: removed
-          ignore_errors: True
+          failed_when: false
           when: step|int == 2
       update_tasks:
         - name: Remove openstack-nova-compute and python-nova package during upgrade
@@ -1067,7 +1062,7 @@ outputs:
               - openstack-nova-compute
               - python-nova
             state: removed
-          ignore_errors: True
+          failed_when: false
           when: step|int == 2
       scale_tasks:
         - when: step|int == 1
@@ -1142,7 +1137,7 @@ outputs:
           block:
             - name: Check if nova-compute is deployed
               command:  systemctl is-enabled --quiet openstack-nova-compute
-              ignore_errors: True
+              failed_when: false
               register: nova_compute_enabled_result
             - name: Set fact nova_compute_enabled
               set_fact:
