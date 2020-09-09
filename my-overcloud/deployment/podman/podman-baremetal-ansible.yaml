@@ -106,7 +106,6 @@ outputs:
             include_role:
               name: tripleo-podman
               tasks_from: tripleo_podman_install.yml
-              vars_from: "redhat.yml"
             vars:
               tripleo_container_registry_insecure_registries: "{{ container_registry_insecure_registries }}"
 
@@ -137,12 +136,22 @@ outputs:
         - when:
             - (step|int) == 1
           block:
-            # TODO(mwhahaha): figure out the bug in podman_image
+            # NOTE(mwhahaha): validate_certs is a misnomer because what it
+            # actually does is enable the --tls-verify flag which forces
+            # registries to only be over HTTPS. By default, podman will only
+            # use HTTPS registries but has a way to configure specific insecure
+            # and non-HTTPS registries. The --tls-verify flag prevents this
+            # fallback from functioning. We rely on this fallback for the
+            # undercloud registry.
             - name: Pre-fetch all the containers
               become: true
-              shell: podman pull "{{ container_image }}"
+              podman_image:
+                  name: "{{ prefetch_image }}"
+                  validate_certs: false
+              retries: 5
+              delay: 5
               loop_control:
-                  loop_var: container_image
+                  loop_var: prefetch_image
               loop: "{{ lookup('file', tripleo_role_name + '/docker_config.yaml', errors='ignore') | default('{}', True) | from_yaml | recursive_get_key_from_dict(key='image') | unique }}"
 
       service_config_settings: {}
@@ -152,6 +161,13 @@ outputs:
           when:
             - step|int == 1
           block:
+            - name: Make sure the Undercloud hostname is included in /etc/hosts
+              when:
+                - undercloud_hosts_entries is defined
+              lineinfile:
+                dest: /etc/hosts
+                line: "{{ undercloud_hosts_entries | join('') }}"
+                state: present
             - name: Set container_registry_insecure_registries fact.
               set_fact:
                 container_registry_insecure_registries:
@@ -162,7 +178,6 @@ outputs:
             - include_role:
                 name: tripleo-podman
                 tasks_from: tripleo_podman_install.yml
-                vars_from: "redhat.yml"
               vars:
                 tripleo_container_registry_insecure_registries: "{{ container_registry_insecure_registries }}"
 

@@ -368,6 +368,36 @@ parameters:
     default: 0.0
     tags:
       - role_specific
+  NovaPMEMMappings:
+    type: string
+    description: >
+      PMEM namespace mappings as backend for vPMEM feature. This parameter
+      sets Nova's `pmem_namespaces` configuration options. PMEM namespaces
+      needs to be create manually or with conjunction with `NovaPMEMNamespaces`
+      parameter.
+      Requires format: $LABEL:$NSNAME[|$NSNAME][,$LABEL:$NSNAME[|$NSNAME]].
+    default: ""
+    tags:
+      - role_specific
+  NovaPMEMNamespaces:
+    type: string
+    description: >
+      Creates PMEM namespaces on the host server using `ndctl` tool
+      through Ansible.
+      Requires format: $SIZE:$NSNAME[,$SIZE:$NSNAME...].
+      $SIZE supports the suffixes "k" or "K" for KiB, "m" or "M" for MiB, "g"
+      or "G" for GiB and "t" or "T" for TiB.
+      NOTE: This requires properly configured NVDIMM regions and enough space
+      for requested namespaces.
+    default: ""
+    tags:
+      - role_specific
+  DockerInsecureRegistryAddress:
+    description: Optional. The IP Address and Port of an insecure docker
+                 namespace that will be configured in /etc/sysconfig/docker.
+                 The value can be multiple addresses separated by commas.
+    type: comma_delimited_list
+    default: []
 
   # DEPRECATED: the following options are deprecated and are currently maintained
   # for backwards compatibility. They will be removed in future release.
@@ -464,6 +494,8 @@ resources:
               nova::cpu_allocation_ratio: NovaCPUAllocationRatio
               nova::ram_allocation_ratio: NovaRAMAllocationRatio
               nova::disk_allocation_ratio: NovaDiskAllocationRatio
+              nova::compute::libvirt::pmem_namespaces: NovaPMEMMappings
+              nova_pmem_namespaces: NovaPMEMNamespaces
             - values: {get_param: [RoleParameters]}
           - values:
               NovaVcpuPinSet: {get_param: NovaVcpuPinSet}
@@ -535,8 +567,11 @@ resources:
               NovaCPUAllocationRatio: {get_param: NovaCPUAllocationRatio}
               NovaRAMAllocationRatio: {get_param: NovaRAMAllocationRatio}
               NovaDiskAllocationRatio: {get_param: NovaDiskAllocationRatio}
+              NovaPMEMMappings: {get_param: NovaPMEMMappings}
+              NovaPMEMNamespaces: {get_param: NovaPMEMNamespaces}
 
 conditions:
+  insecure_registry_is_empty: {equals : [{get_param: DockerInsecureRegistryAddress}, []]}
   enable_instance_ha: {equals: [{get_param: EnableInstanceHA}, true]}
 
   enable_live_migration_tunnelled:
@@ -779,6 +814,7 @@ outputs:
                     - {get_attr: [NovaLogging, volumes]}
                     - {get_param: NovaComputeOptVolumes}
                     -
+                      - /etc/ssh/ssh_known_hosts:/etc/ssh/ssh_known_hosts:ro
                       - /var/lib/kolla/config_files/nova_compute.json:/var/lib/kolla/config_files/config.json:ro
                       - /var/lib/config-data/puppet-generated/nova_libvirt:/var/lib/kolla/config_files/src:ro
                       - /etc/iscsi:/var/lib/kolla/config_files/src-iscsid:ro
@@ -787,7 +823,7 @@ outputs:
                       - /lib/modules:/lib/modules:ro
                       - /run:/run
                       - /var/lib/iscsi:/var/lib/iscsi:z
-                      - /var/lib/libvirt:/var/lib/libvirt:shared
+                      - /var/lib/libvirt:/var/lib/libvirt:shared,z
                       - /sys/class/net:/sys/class/net
                       - /sys/bus/pci:/sys/bus/pci
                       - /boot:/boot:ro
@@ -895,12 +931,6 @@ outputs:
               - resume_guests_state_on_host_boot_enabled|bool
               - container_cli == 'podman'
             block:
-              - name: make sure default libvirt-guests is disabled
-                systemd:
-                  name: libvirt-guests
-                  enabled: no
-                  masked: yes
-                  daemon_reload: yes
               - name: libvirt-guests unit to stop nova_compute container before shutdown VMs
                 copy:
                   dest: /etc/systemd/system/tripleo_nova_libvirt_guests.service
@@ -916,8 +946,8 @@ outputs:
 
                     [Service]
                     EnvironmentFile=-/etc/sysconfig/libvirt-guests
-                    ExecStart=/usr/bin/podman exec nova_libvirt /bin/rm -f /var/lib/libvirt/libvirt-guests
-                    ExecStop=/usr/bin/podman exec nova_libvirt /bin/sh -x /usr/libexec/libvirt-guests.sh shutdown
+                    ExecStart=/bin/{{container_cli}} exec nova_libvirt /bin/rm -f /var/lib/libvirt/libvirt-guests
+                    ExecStop=/bin/{{container_cli}} exec nova_libvirt /bin/sh -x /usr/libexec/libvirt-guests.sh shutdown
                     Type=oneshot
                     RemainAfterExit=yes
                     StandardOutput=journal+console
@@ -959,7 +989,7 @@ outputs:
               register: iha_nodes
             - name: If instance HA is enabled on the node activate the evacuation completed check
               file: path=/var/lib/nova/instanceha/enabled state=touch
-              when: iha_nodes.stdout|lower | search('"'+ansible_hostname|lower+'"')
+              when: iha_nodes.stdout|lower is search('"'+ansible_hostname|lower+'"')
           - name: is KSM enabled
             set_fact:
               compute_ksm_enabled: {get_attr: [RoleParametersValue, value, compute_enable_ksm]}
@@ -1025,6 +1055,7 @@ outputs:
       deploy_steps_tasks:
         - name: validate nova compute container state
           when:
+            - not (ansible_check_mode | bool)
             - container_cli == 'podman'
             - not container_healthcheck_disabled
             - step|int == 6 #FIXME: there is no step6
@@ -1045,8 +1076,68 @@ outputs:
               fail:
                 msg: nova-compute isn't working (healthcheck failed)
               when: nova_compute_healthcheck_state.status.ExecMainStatus != '0'
+        - name: manage PMEM namespaces for vPMEM
+          include_role:
+            name: tripleo_nvdimm
+          vars:
+            tripleo_nvdimm_pmem_namespaces: {get_attr: [RoleParametersValue, value, nova_pmem_namespaces]}
+          when:
+            - step|int == 1
+            - tripleo_nvdimm_pmem_namespaces != ''
       external_post_deploy_tasks: {get_attr: [NovaComputeCommon, nova_compute_common_deploy_steps_tasks]}
       upgrade_tasks:
+        - name: Switch compute to hybrid state
+          vars:
+            nova_compute_image: {get_param: ContainerNovaComputeImage}
+          tags:
+            - never
+            - nova_hybrid_state
+          when: step|int == 0
+          block:
+            - name: Check if we need to update the paunch config
+              shell: |
+                set -o pipefail
+                jq ."nova_compute"."image" /var/lib/tripleo-config/docker-container-startup-config-step_4.json
+              register: nova_compute_paunch_image
+            - name: Implement the hybrid state (only if the compute is still Queens)
+              when: nova_compute_paunch_image.stdout != nova_compute_image
+              block:
+                - name: Update the nova_compute paunch image in config
+                  shell: |
+                    set -o pipefail
+                    cat <<< $(jq '.nova_compute.image = "{{ nova_compute_image }}"' \
+                    /var/lib/tripleo-config/docker-container-startup-config-step_4.json) >\
+                    /var/lib/tripleo-config/docker-container-startup-config-step_4.json
+                # Nova compute will not work unless we ensure it will not connect against db and use messaging
+                - name: Remove database section from nova_compute config
+                  shell: crudini --del database /var/lib/config-data/puppet-generated/nova_libvirt/etc/nova/nova.conf
+                - name: Remove api_database section from nova_compute config
+                  shell: crudini --del api_database /var/lib/config-data/puppet-generated/nova_libvirt/etc/nova/nova.conf
+                # This code is partial copy of logic in podman installation
+                - name: Make sure the Undercloud hostname is included in /etc/hosts
+                  when:
+                    - undercloud_hosts_entries is defined
+                  lineinfile:
+                    dest: /etc/hosts
+                    line: "{{ undercloud_hosts_entries | join('') }}"
+                    state: present
+                - name: Set container_registry_insecure_registries fact.
+                  set_fact:
+                    container_registry_insecure_registries:
+                      if:
+                        - insecure_registry_is_empty
+                        - []
+                        - {get_param: DockerInsecureRegistryAddress}
+                - name: Set container_registry_insecure registries
+                  when: container_registry_insecure_registries != []
+                  shell: crudini --set /etc/containers/registries.conf registries.insecure registries "[{{ container_registry_insecure_registries | map('regex_replace', '(.*)', "'\1'") | join(',') }}]"
+                - name: Restart docker
+                  service:
+                    name: docker
+                    state: restarted
+                # Finally apply the paunch config to start the new nova_compute
+                - name: Apply paunch config
+                  shell: paunch apply --file /var/lib/tripleo-config/docker-container-startup-config-step_4.json --config-id tripleo_step4
         - name: Remove openstack-nova-compute and python-nova package during upgrade
           package:
             name:
@@ -1065,7 +1156,9 @@ outputs:
           failed_when: false
           when: step|int == 2
       scale_tasks:
-        - when: step|int == 1
+        - when:
+            - step|int == 1
+            - container_cli == 'podman'
           tags: down
           environment:
             OS_USERNAME: admin
@@ -1130,27 +1223,3 @@ outputs:
                   command: openstack compute service delete {{ nova_compute_service[0].ID }}
                   delegate_to: localhost
                   check_mode: no
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-          block:
-            - name: Check if nova-compute is deployed
-              command:  systemctl is-enabled --quiet openstack-nova-compute
-              failed_when: false
-              register: nova_compute_enabled_result
-            - name: Set fact nova_compute_enabled
-              set_fact:
-                nova_compute_enabled: "{{ nova_compute_enabled_result.rc == 0 }}"
-        - when:
-            - step|int == 1
-            - release == 'rocky'
-          block:
-            - name: Stop and disable nova-compute service
-              service: name=openstack-nova-compute state=stopped
-              when:
-                - nova_compute_enabled|bool
-            - name: Set upgrade marker in nova statedir
-              file: path=/var/lib/nova/upgrade_marker state=touch owner=nova group=nova
-              when:
-                - nova_compute_enabled|bool

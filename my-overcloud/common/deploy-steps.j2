@@ -21,8 +21,6 @@
 {% set upgrade_steps_max = 6 -%}
 {% set external_upgrade_steps_max = 3 -%}
 {% set post_upgrade_steps_max = 4 -%}
-{% set fast_forward_upgrade_steps_max = 9 -%}
-{% set fast_forward_upgrade_prep_steps_max = 3 -%}
 {% set post_update_steps_max = 4 -%}
 {% set scale_steps_max = 1 -%}
 
@@ -88,10 +86,10 @@ parameters:
     type: boolean
     default: true
     description: Whether containerized puppet executions use modules from the baremetal host. Defaults to true. Can be set to false to consume puppet modules from containers directly.
-  FastForwardUpgradeReleases:
-    type: comma_delimited_list
-    default: ['rocky', 'stein', 'train']
-    description: List of releases to fast forward through during upgrade. Last release in list is used for post steps.
+  FastForwardUpgrade:
+    type: boolean
+    default: false
+    description: This flag is being used conditionally run a set of task needed to upgrade three releases within the deployment tasks.
   ContainerLogStdoutPath:
     type: string
     description: Absolute path for container stdout output (Podman only)
@@ -128,10 +126,6 @@ parameters:
     default: false
     description: Optional validation to ensure FQDN as set by Nova matches the name set in /etc/hosts.
     type: boolean
-  ValidateNtp:
-    default: true
-    description: Validation to ensure at least one time source is accessible.
-    type: boolean
   PingTestIpsMap:
     default: ''
     description: A map of role name to a space separated list of IP addresses used to ping test each available network interface.
@@ -161,7 +155,7 @@ parameters:
       Type of update, to differentiate between UPGRADE and UPDATE cases
       when StackAction is UPDATE (both are the same stack action).
     constraints:
-    - allowed_values: ['', 'UPGRADE', 'FASTFORWARDUPGRADE']
+    - allowed_values: ['', 'UPGRADE']
     default: ''
   ContainerCli:
     type: string
@@ -349,7 +343,6 @@ outputs:
         validate_controllers_icmp: {get_param: ValidateControllersIcmp}
         validate_gateways_icmp: {get_param: ValidateGatewaysIcmp}
         validate_fqdn: {get_param: ValidateFqdn}
-        validate_ntp: {get_param: ValidateNtp}
         ping_test_ips: {get_param: PingTestIpsMap}
         stack_action: {get_param: StackAction}
         deploy_artifact_urls: {list_join: [' ', {get_param: DeployArtifactURLs}]}
@@ -399,7 +392,6 @@ outputs:
       hiera_steps_tasks: {get_file: hiera-steps-tasks.yaml}
       deploy_steps_tasks_step_0: {get_file: deploy-steps-tasks-step-0.yaml}
       common_deploy_steps_tasks_step_1: {get_file: deploy-steps-tasks-step-1.yaml}
-      container_startup_configs_tasks: {get_file: container_startup_configs_tasks.yaml}
       docker_puppet_script: {get_file: ./container-puppet.py}
       container_puppet_script: {get_file: ./container-puppet.sh}
       all_nodes_validation_script.sh : {get_file: ../validation-scripts/all-nodes.sh}
@@ -424,6 +416,7 @@ outputs:
             DOCKER_PUPPET_PROCESS_COUNT: {get_param: DockerPuppetProcessCount}
             DOCKER_PUPPET_MOUNT_HOST_PUPPET: {get_param: DockerPuppetMountHostPuppet}
             SELINUX_MODE: {get_param: SELinuxMode}
+            FAST_FORWARD_UPGRADE: {get_param: FastForwardUpgrade}
 {% endblock %}
           template: |
             - import_playbook: common_deploy_steps_playbooks.yaml
@@ -431,15 +424,22 @@ outputs:
                 deploy_source_host: "DEPLOY_SOURCE_HOST"
                 deploy_target_host: "DEPLOY_TARGET_HOST"
 
-            - hosts: all
-              name: Manage SELinux and generate /etc/hosts
+            - hosts: DEPLOY_TARGET_HOST
+              name: Manage SELinux
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
               tasks:
                 - name: Set selinux state
+                  become: true
                   selinux:
                     policy: targeted
                     state: SELINUX_MODE
+
+            - hosts: all
+              name: Generate /etc/hosts
+              gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
+              any_errors_fatal: yes
+              tasks:
 {% raw %}
                 - name: Configure Hosts Entries
                   include_role:
@@ -462,14 +462,17 @@ outputs:
                   run_once: true
                   debug:
                     msg: Use --start-at-task "Common roles for TripleO servers" to resume from this task
-              roles:
-                - tripleo-bootstrap
-                - tripleo-ssh-known-hosts
+              tasks:
+                - include_role:
+                    name: tripleo-bootstrap
+                - include_role:
+                    name: tripleo-ssh-known-hosts
               tags:
                 - common_roles
 
             - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
               name: Overcloud deploy step tasks for step 0
+              become: true
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
               vars:
@@ -478,6 +481,7 @@ outputs:
                 deploy_identifier: DEPLOY_IDENTIFIER
                 enable_debug: ENABLE_DEBUG
                 enable_puppet: ENABLE_PUPPET
+                enable_paunch: ENABLE_PAUNCH
                 container_cli: CONTAINER_CLI
                 container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
                 container_healthcheck_disabled: CONTAINER_HEALTHCHECK_DISABLED
@@ -540,6 +544,7 @@ outputs:
                         - "{{ tripleo_role_name ~ '/NetworkConfig' }}"
 
                 - name: NetworkConfig
+                  become: true
                   block:
                     - name: Create /var/lib/tripleo-config/scripts directory
                       file:
@@ -563,17 +568,23 @@ outputs:
                         bridge_name: "{{ neutron_physical_bridge_name }}"
                         interface_name: "{{ neutron_public_interface_name }}"
                       register: NetworkConfig_result
+                      when:
+                        - not ansible_check_mode
                       failed_when: NetworkConfig_result.rc is not defined
 
                     - name: Write rc of NetworkConfig script
                       copy:
                         content: "{{ NetworkConfig_result.rc }}"
                         dest: /var/lib/tripleo-config/os-net-config.returncode
+                      when:
+                        - NetworkConfig_result.rc is defined
 
                     - name: NetworkConfig stdout
                       debug:
                         var: NetworkConfig_result.stderr_lines
                       failed_when: NetworkConfig_result.rc != 0
+                      when:
+                        - NetworkConfig_result.rc is defined
 
                     # os-net-config currently relies on the legacy network
                     # so we need to ensure it's enabled on boot. This should
@@ -607,7 +618,6 @@ outputs:
                     validate_controllers_icmp: "{{ validate_controllers_icmp }}"
                     validate_gateways_icmp: "{{ validate_gateways_icmp }}"
                     validate_fqdn: "{{ validate_fqdn }}"
-                    validate_ntp: "{{ validate_ntp }}"
                     ping_test_ips: "{{ ping_test_ips | to_json }}"
                     tripleo_role_name: "{{ tripleo_role_name }}"
 
@@ -620,10 +630,10 @@ outputs:
                 - overcloud
                 - pre_deploy_steps
 {% endraw %}
-{%- for role in roles %}
 
-            - hosts: {{role.name}}
-              name: {{role.name}} Host prep steps
+            - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
+              name: Host prep steps
+              become: true
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
               vars:
@@ -631,6 +641,7 @@ outputs:
                 deploy_identifier: DEPLOY_IDENTIFIER
                 enable_debug: ENABLE_DEBUG
                 enable_puppet: ENABLE_PUPPET
+                enable_paunch: ENABLE_PAUNCH
                 container_cli: CONTAINER_CLI
                 container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
                 container_healthcheck_disabled: CONTAINER_HEALTHCHECK_DISABLED
@@ -638,16 +649,21 @@ outputs:
                 docker_puppet_process_count: DOCKER_PUPPET_PROCESS_COUNT
                 docker_puppet_mount_host_puppet: DOCKER_PUPPET_MOUNT_HOST_PUPPET
               tasks:
-                - name: {{role.name}} Host prep steps
-                  delegate_to: localhost
-                  run_once: true
-                  debug:
-                    msg: Use --start-at-task "{{role.name}} Host prep steps" to resume from this task
-                - import_tasks: {{role.name}}/host_prep_tasks.yaml
+{%- for role in roles %}
+                - name: {{role.name}} Host prep block
+                  when:
+                    - tripleo_role_name == '{{role.name}}'
+                  block:
+                    - name: {{role.name}} Host prep steps
+                      delegate_to: localhost
+                      run_once: true
+                      debug:
+                        msg: Use --start-at-task '{{role.name}} Host prep steps' to resume from this task
+                    - import_tasks: {{role.name}}/host_prep_tasks.yaml
+{%- endfor %}
               tags:
                 - overcloud
                 - host_prep_steps
-{%- endfor %}
 
 {%- for step in range(1,deploy_steps_max) %}
 
@@ -662,6 +678,7 @@ outputs:
                 deploy_identifier: DEPLOY_IDENTIFIER
                 enable_debug: ENABLE_DEBUG
                 enable_puppet: ENABLE_PUPPET
+                enable_paunch: ENABLE_PAUNCH
                 container_cli: CONTAINER_CLI
                 container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
                 container_healthcheck_disabled: CONTAINER_HEALTHCHECK_DISABLED
@@ -682,6 +699,7 @@ outputs:
 
             - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
               name: Overcloud deploy step tasks for {{step}}
+              become: true
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
               # FIXME(shardy) - it would be nice to use strategy: free to
@@ -693,12 +711,14 @@ outputs:
                 deploy_identifier: DEPLOY_IDENTIFIER
                 enable_debug: ENABLE_DEBUG
                 enable_puppet: ENABLE_PUPPET
+                enable_paunch: ENABLE_PAUNCH
                 container_cli: CONTAINER_CLI
                 container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
                 container_healthcheck_disabled: CONTAINER_HEALTHCHECK_DISABLED
                 docker_puppet_debug: DOCKER_PUPPET_DEBUG
                 docker_puppet_process_count: DOCKER_PUPPET_PROCESS_COUNT
                 docker_puppet_mount_host_puppet: DOCKER_PUPPET_MOUNT_HOST_PUPPET
+                tripleo_fast_forward_upgrade: FAST_FORWARD_UPGRADE
               tasks:
                 - name: Write the config_step hieradata for the deploy step {{step}} tasks
 {% raw %}
@@ -714,83 +734,43 @@ outputs:
                   debug:
                     msg: Use --start-at-task "Overcloud deploy step tasks for {{step}}" to resume from this task
 {%- for role in roles %}
-                - include_tasks: "{% raw %}{{ _task_file_path }}{% endraw %}"
-                  vars:
-                    _task_file_path: "{{role.name}}/deploy_steps_tasks_step{{step}}.yaml"
+                - include_tasks: "{{role.name}}/deploy_steps_tasks_step{{step}}.yaml"
                   when:
                     - tripleo_role_name == '{{role.name}}'
-                    - "{% raw %}'{{ playbook_dir }}/{{ _task_file_path }}' is exists{% endraw %}"
+                    - "'{{role.name}}/deploy_steps_tasks_step{{step}}.yaml' is exists"
 {%- endfor %}
-              tags:
-                - overcloud
-                - deploy_steps
-                - step{{step}}
-
 {% if step == 1 %}
-            - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
-              name: Overcloud common bootstrap tasks for step 1
-              gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
-              any_errors_fatal: yes
-              vars:
-                bootstrap_server_id: BOOTSTRAP_SERVER_ID
-                step: '{{step}}'
-                deploy_identifier: DEPLOY_IDENTIFIER
-                enable_debug: ENABLE_DEBUG
-                enable_puppet: ENABLE_PUPPET
-                container_cli: CONTAINER_CLI
-                container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
-                container_healthcheck_disabled: CONTAINER_HEALTHCHECK_DISABLED
-                docker_puppet_debug: DOCKER_PUPPET_DEBUG
-                docker_puppet_process_count: DOCKER_PUPPET_PROCESS_COUNT
-                docker_puppet_mount_host_puppet: DOCKER_PUPPET_MOUNT_HOST_PUPPET
-              tasks:
                 - name: Overcloud common bootstrap tasks for step 1
-                  delegate_to: localhost
-                  run_once: true
-                  debug:
-                    msg: Use --start-at-task 'Overcloud common bootstrap tasks for step 1' to resume from this task
-                - name: Check if /var/lib/tripleo-config/container-startup-config-step_1.json already exists
-                  stat:
-                    path: /var/lib/tripleo-config/container-startup-config-step_1.json
-                  register: container_startup_configs_json_stat
-                - include_tasks: common_deploy_steps_tasks_step_1.yaml
-                  when: (deploy_identifier is defined and deploy_identifier != "" and deploy_identifier is not none) or
-                        (container_startup_configs_json_stat is defined and not container_startup_configs_json_stat.stat.exists)
-              tags:
-                - overcloud
-                - deploy_steps
-                - step{{step}}
-
+                  block:
+                    - name: Overcloud common bootstrap tasks for step 1
+                      delegate_to: localhost
+                      run_once: true
+                      debug:
+                        msg: Use --start-at-task 'Overcloud common bootstrap tasks for step 1' to resume from this task
+                    - name: "Check if /var/lib/tripleo-config/container-startup-config-step_1.json already exists"
+                      stat:
+                        path: "/var/lib/tripleo-config/container-startup-config-step_1.json"
+                      register: container_startup_configs_json_stat
+                    - name: Write config data at the start of step 1
+                      include_tasks: common_deploy_steps_tasks_step_1.yaml
+                      when:
+                        - ((deploy_identifier is defined and deploy_identifier != "" and deploy_identifier is not none) or
+                          not container_startup_configs_json_stat.stat.exists)
 {% endif %}
-            - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
-              name: Overcloud common deploy step tasks {{step}}
-              gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
-              any_errors_fatal: yes
-              vars:
-                bootstrap_server_id: BOOTSTRAP_SERVER_ID
-                step: '{{step}}'
-                deploy_identifier: DEPLOY_IDENTIFIER
-                enable_debug: ENABLE_DEBUG
-                enable_puppet: ENABLE_PUPPET
-                container_cli: CONTAINER_CLI
-                container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
-                container_healthcheck_disabled: CONTAINER_HEALTHCHECK_DISABLED
-                docker_puppet_debug: DOCKER_PUPPET_DEBUG
-                docker_puppet_process_count: DOCKER_PUPPET_PROCESS_COUNT
-                docker_puppet_mount_host_puppet: DOCKER_PUPPET_MOUNT_HOST_PUPPET
-              tasks:
                 - name: Overcloud common deploy step tasks {{step}}
-                  delegate_to: localhost
-                  run_once: true
-                  debug:
-                    msg: Use --start-at-task "Overcloud common deploy step tasks {{step}}" to resume from this task
-                - name: Check if /var/lib/tripleo-config/container-startup-config-step_{{ step }}.json already exists
-                  stat:
-                    path: /var/lib/tripleo-config/container-startup-config-step_{{ step }}.json
-                  register: container_startup_configs_json_stat
-                - include_tasks: common_deploy_steps_tasks.yaml
-                  when: (deploy_identifier is defined and deploy_identifier != "" and deploy_identifier is not none) or
-                        (container_startup_configs_json_stat is defined and not container_startup_configs_json_stat.stat.exists)
+                  block:
+                    - name: Overcloud common deploy step tasks {{step}}
+                      delegate_to: localhost
+                      run_once: true
+                      debug:
+                        msg: Use --start-at-task 'Overcloud common deploy step tasks {{step}}' to resume from this task
+                    - name: "Check if /var/lib/tripleo-config/container-startup-config-step_{{step}}.json already exists"
+                      stat:
+                        path: "/var/lib/tripleo-config/container-startup-config-step_{{step}}.json"
+                      register: container_startup_configs_json_stat
+                    - include_tasks: common_deploy_steps_tasks.yaml
+                      when: (deploy_identifier is defined and deploy_identifier != "" and deploy_identifier is not none) or
+                            (container_startup_configs_json_stat is defined and not container_startup_configs_json_stat.stat.exists)
               tags:
                 - overcloud
                 - deploy_steps
@@ -799,6 +779,7 @@ outputs:
 {%- endfor %}
             - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
               name: Server Post Deployments
+              become: true
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
               tasks:
@@ -827,6 +808,7 @@ outputs:
                 deploy_identifier: DEPLOY_IDENTIFIER
                 enable_debug: ENABLE_DEBUG
                 enable_puppet: ENABLE_PUPPET
+                enable_paunch: ENABLE_PAUNCH
                 container_cli: CONTAINER_CLI
                 container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
                 container_healthcheck_disabled: CONTAINER_HEALTHCHECK_DISABLED
@@ -872,6 +854,7 @@ outputs:
                 deploy_identifier: DEPLOY_IDENTIFIER
                 enable_debug: ENABLE_DEBUG
                 enable_puppet: ENABLE_PUPPET
+                enable_paunch: ENABLE_PAUNCH
                 container_cli: CONTAINER_CLI
                 container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
                 container_healthcheck_disabled: CONTAINER_HEALTHCHECK_DISABLED
@@ -928,6 +911,7 @@ outputs:
                 deploy_identifier: DEPLOY_IDENTIFIER
                 enable_debug: ENABLE_DEBUG
                 enable_puppet: ENABLE_PUPPET
+                enable_paunch: ENABLE_PAUNCH
                 container_cli: CONTAINER_CLI
                 container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
                 container_healthcheck_disabled: CONTAINER_HEALTHCHECK_DISABLED
@@ -956,6 +940,7 @@ outputs:
                 deploy_identifier: DEPLOY_IDENTIFIER
                 enable_debug: ENABLE_DEBUG
                 enable_puppet: ENABLE_PUPPET
+                enable_paunch: ENABLE_PAUNCH
                 container_cli: CONTAINER_CLI
                 container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
                 container_healthcheck_disabled: CONTAINER_HEALTHCHECK_DISABLED
@@ -1005,6 +990,7 @@ outputs:
 {%- for step in range(0,upgrade_steps_max) %}
             - hosts: DEPLOY_TARGET_HOST
               name: Upgrade tasks for step {{step}}
+              become: true
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
               vars:
@@ -1037,6 +1023,10 @@ outputs:
       post_upgrade_steps_playbook:
 {{ self.deploy_steps_str_replace_params() }}
           template: |
+            - import_playbook: common_deploy_steps_playbooks.yaml
+              vars:
+                deploy_source_host: "DEPLOY_SOURCE_HOST"
+                deploy_target_host: "DEPLOY_TARGET_HOST"
             - hosts: DEPLOY_TARGET_HOST
               any_errors_fatal: yes
               tasks:
@@ -1047,6 +1037,7 @@ outputs:
                     deploy_identifier: DEPLOY_IDENTIFIER
                     enable_debug: ENABLE_DEBUG
                     enable_puppet: ENABLE_PUPPET
+                    enable_paunch: ENABLE_PAUNCH
                     container_cli: CONTAINER_CLI
                     container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
                     container_healthcheck_disabled: CONTAINER_HEALTHCHECK_DISABLED
@@ -1078,6 +1069,7 @@ outputs:
                 deploy_identifier: DEPLOY_IDENTIFIER
                 enable_debug: ENABLE_DEBUG
                 enable_puppet: ENABLE_PUPPET
+                enable_paunch: ENABLE_PAUNCH
                 container_cli: CONTAINER_CLI
                 container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
                 container_healthcheck_disabled: CONTAINER_HEALTHCHECK_DISABLED
@@ -1109,6 +1101,7 @@ outputs:
                 deploy_identifier: DEPLOY_IDENTIFIER
                 enable_debug: ENABLE_DEBUG
                 enable_puppet: ENABLE_PUPPET
+                enable_paunch: ENABLE_PAUNCH
                 container_cli: CONTAINER_CLI
                 container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
                 container_healthcheck_disabled: CONTAINER_HEALTHCHECK_DISABLED
@@ -1133,7 +1126,7 @@ outputs:
               vars:
                 deploy_source_host: "DEPLOY_SOURCE_HOST"
                 deploy_target_host: "DEPLOY_TARGET_HOST"
-                ignore_unreachable: true
+                scale_ignore_unreachable: true
 
             - hosts: DEPLOY_TARGET_HOST
               name: Scaling
@@ -1149,6 +1142,7 @@ outputs:
                 deploy_identifier: DEPLOY_IDENTIFIER
                 enable_debug: ENABLE_DEBUG
                 enable_puppet: ENABLE_PUPPET
+                enable_paunch: ENABLE_PAUNCH
                 container_cli: CONTAINER_CLI
                 container_log_stdout_path: CONTAINER_LOG_STDOUT_PATH
                 docker_puppet_debug: DOCKER_PUPPET_DEBUG
@@ -1182,93 +1176,6 @@ outputs:
                   when: ansible_hostname is not defined
               tags:
                 - scale
-      fast_forward_upgrade_playbook:
-{{ self.deploy_steps_str_replace_params() }}
-          template: |
-            - hosts: DEPLOY_TARGET_HOST
-              any_errors_fatal: yes
-              tasks:
-                - set_fact:
-                    releases: {get_param: [FastForwardUpgradeReleases]}
-{% raw %}
-                - set_fact:
-                    ffu_releases: "{{ releases | difference( releases | last )}}"
-                - include_tasks: fast_forward_upgrade_release_tasks.yaml
-                  loop_control:
-                    loop_var: release
-                  with_items: '{{ ffu_releases }}'
-                - set_fact:
-                    release: "{{ releases | last }}"
-                    ffu_packages_apply: True
-{% endraw %}
-                - include_tasks: fast_forward_upgrade_post_role_tasks.yaml
-      fast_forward_upgrade_release_tasks: |
-                - include_tasks: fast_forward_upgrade_prep_tasks.yaml
-                - include_tasks: fast_forward_upgrade_bootstrap_tasks.yaml
-      fast_forward_upgrade_prep_tasks: |
-{%- for role in roles %}
-                - shell: |
-                    #!/bin/bash
-                    if [ ! -f /root/.ffu_workaround ]; then
-                      touch /root/.ffu_workaround
-                      os-apply-config -m /var/lib/os-collect-config/{{role.deprecated_server_resource_name|default(role.name)}}Deployment.json
-                      systemctl stop os-collect-config
-                      rm -r /var/lib/os-collect-config/*
-                      rm -f /usr/libexec/os-refresh-config/configure.d/40-hiera-datafiles
-                      rm -f /usr/libexec/os-apply-config/templates/etc/puppet/hiera.yaml
-                      rm -f /usr/libexec/os-refresh-config/configure.d/10-hiera-disable
-                    fi
-                  when: tripleo_role_name == '{{role.name}}'
-                  name: Run Fast Forward Upgrade Prep Workarounds for {{role.name}}
-{%- endfor %}
-                - name: Create /var/lib/container-puppet
-                  file: path=/var/lib/container-puppet state=directory setype=svirt_sandbox_file_t selevel=s0 recurse=true
-                - name: Write container-puppet.py if Paunch is enabled
-                  no_log: True
-                  copy: src=docker_puppet_script.yaml dest=/var/lib/container-puppet/container-puppet.py force=yes mode=0600
-                  when:
-                    - enable_paunch|default(false)
-                - name: Write container-puppet.sh
-                  no_log: True
-                  copy: src=container_puppet_script.yaml dest=/var/lib/container-puppet/container-puppet.sh force=yes mode=0755 setype=container_file_t
-                - include_tasks: fast_forward_upgrade_prep_role_tasks.yaml
-                  with_sequence: start=0 end={{fast_forward_upgrade_prep_steps_max}}
-                  loop_control:
-                    loop_var: step
-      fast_forward_upgrade_post_role_tasks: |
-{%- for role in roles %}
-                - include_tasks: {{role.name}}/fast_forward_post_upgrade_tasks.yaml
-                  when: tripleo_role_name == '{{role.name}}'
-                  tags:
-                    - always
-{%- endfor %}
-                - name: Openstack Heat Agents package update
-                  package: name=openstack-heat-agents state=latest
-                - name: Update os-collect-config
-                  package: name=os-collect-config state=latest
-                - name: Start os-collect-config back up
-                  service: name=os-collect-config state=started enabled=yes
-      fast_forward_upgrade_prep_role_tasks: |
-{%- for role in roles %}
-                - include_tasks: {{role.name}}/fast_forward_upgrade_tasks.yaml
-                  when: tripleo_role_name == '{{role.name}}'
-                  tags:
-                    - always
-{%- endfor %}
-      fast_forward_upgrade_bootstrap_tasks: |
-                - include_tasks: fast_forward_upgrade_bootstrap_role_tasks.yaml
-                  with_sequence: start={{fast_forward_upgrade_prep_steps_max+1}} end={{fast_forward_upgrade_steps_max}}
-                  loop_control:
-                    loop_var: step
-      fast_forward_upgrade_bootstrap_role_tasks: |
-{%- for role in roles %}
-                - include_tasks: {{role.name}}/fast_forward_upgrade_tasks.yaml
-                  when:
-                    - tripleo_role_name == '{{role.name}}'
-                    - is_bootstrap_node|bool
-                  tags:
-                    - always
-{%- endfor %}
       post_update_steps_tasks: |
 {%- for role in roles %}
             - include_tasks: {{role.name}}/post_update_tasks.yaml

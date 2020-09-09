@@ -3,6 +3,7 @@
 #####################################################
 
 - name: Write the config_step hieradata
+  become: true
   no_log: True
   copy:
     content: "{{ dict(step=step|int) | to_json }}"
@@ -14,6 +15,7 @@
     - host_config
 
 - name: Run puppet host configuration for step {{ step }}
+  become: true
   async: 3600
   poll: 0
   when: enable_puppet|bool
@@ -43,6 +45,9 @@
   delay: 3
   failed_when:
     - (not puppet_host_outputs.finished) or (puppet_host_outputs.rc is defined and puppet_host_outputs.rc not in [0, 2])
+  when:
+    - not (ansible_check_mode | bool)
+    - enable_puppet|bool
   tags:
     - host_config
 
@@ -98,6 +103,7 @@
         dest: /var/lib/container-puppet/puppetlabs/facter.conf
         content: |
           facts : {
+            blocklist: [ "EC2" ],
             ttls: [
               { "kernel" : 8 hour },
               { "memory" : 8 hour },
@@ -116,12 +122,14 @@
     - name: Pre-cache facts
       check_mode: false
       command: facter --config /var/lib/container-puppet/puppetlabs/facter.conf
+      retries: 5
+      delay: 5
       no_log: True
       ignore_errors: True
       register: _facter_cache_run
-    - name: Facter error output when failed
+    - name: Failed deployment if facter fails
       check_mode: false
-      debug:
+      fail:
         msg: "{{ _facter_cache_run.stderr }}"
       when: _facter_cache_run is failed
     - name: Sync cached facts
@@ -150,7 +158,7 @@
 # the *step_n.json with a hash of the generated external config added
 # This acts as a salt to enable restarting the container if config changes
 - name: Per step starting of the containers using Paunch
-  when: enable_paunch|default(true)
+  when: enable_paunch|bool
   block:
     - name: Start containers for step {{ step }} using paunch
       async: 3600
@@ -166,7 +174,6 @@
         healthcheck_disabled: "{{ container_healthcheck_disabled | bool }}"
         managed_by: "tripleo-{{ tripleo_role_name }}"
         debug: "{{ enable_debug | bool }}"
-      register: outputs
       register: start_containers_async_result
       tags:
         - container_startup_configs
@@ -190,7 +197,8 @@
         - container_startup_configs
 
 - name: Per step starting of the containers using tripleo-ansible
-  when: not enable_paunch|default(true)
+  when: not (enable_paunch|bool)
+  become: true
   environment:
     TRIPLEO_MINOR_UPDATE: '{{ tripleo_minor_update | default(false) }}'
   block:
@@ -208,6 +216,7 @@
         tripleo_container_manage_log_path: "{{ container_log_stdout_path }}"
         tripleo_container_manage_config_patterns: '*.json'
         tripleo_container_manage_check_puppet_config: true
+        tripleo_container_manage_valid_exit_code: [0]
       tags:
         - container_startup_configs
 
@@ -216,6 +225,7 @@
 ########################################################
 
 - name: "Clean container_puppet_tasks for {{ansible_hostname | lower}} step {{step}}"
+  become: true
   file:
     path: /var/lib/container-puppet/container-puppet-tasks{{step}}.json
     state: absent
@@ -224,8 +234,8 @@
 
 - name: Calculate container_puppet_tasks for {{ansible_hostname | lower}} step {{step}}
   set_fact:
-    host_container_puppet_tasks: "{{host_container_puppet_tasks|default([]) + [item]}}"
-  loop: "{{container_puppet_tasks.get('step_' + step, [])}}"
+    "{{'host_container_puppet_tasks_' ~ step}}": "{{lookup('vars', 'host_container_puppet_tasks_' ~ step, default=[]) | union([item])}}"
+  loop: "{{container_puppet_tasks.get('step_' ~ step, [])}}"
   when: (groups[item.service_name] | default ([]) | map('extract', hostvars, 'inventory_hostname') | sort | first | lower) == ansible_hostname | lower
   vars:
     container_puppet_tasks: "{{ lookup('file', tripleo_role_name + '/container_puppet_tasks.yaml', errors='ignore') | default({}, True) | from_yaml }}"
@@ -234,6 +244,6 @@
 
 - name: Include container-puppet tasks for step {{step}}
   include_tasks: host-container-puppet-tasks.yaml
-  when: host_container_puppet_tasks is defined
+  when: ('host_container_puppet_tasks_' ~ step)  is defined
   tags:
     - container_config_tasks

@@ -4,6 +4,10 @@ description: >
   OpenStack containerized Cinder API service
 
 parameters:
+  ContainerCinderApiImageStein:
+    description: image
+    type: string
+    default: ''
   ContainerCinderApiImage:
     description: image
     type: string
@@ -90,6 +94,7 @@ parameters:
 
 conditions:
 
+  fast_forward_upgrade: {not: {equals: [{get_param: ContainerCinderApiImageStein},'']}}
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
   cinder_workers_zero: {equals : [{get_param: CinderWorkers}, 0]}
 
@@ -110,6 +115,9 @@ resources:
       DefaultPasswords: {get_param: DefaultPasswords}
       RoleName: {get_param: RoleName}
       RoleParameters: {get_param: RoleParameters}
+
+  CinderCommon:
+    type: ./cinder-common-container-puppet.yaml
 
   ApacheServiceBase:
     type: ../../deployment/apache/apache-baremetal-puppet.yaml
@@ -255,6 +263,13 @@ outputs:
               dest: "/etc/httpd/conf.d"
               merge: false
               preserve_properties: true
+            - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.modules.d"
+              dest: "/etc/httpd/conf.modules.d"
+              # TODO(emilien) remove optional flag once we get a promotion
+              # https://launchpad.net/bugs/1884115
+              optional: true
+              merge: false
+              preserve_properties: true
             - source: "/var/lib/kolla/config_files/src/*"
               dest: "/"
               merge: true
@@ -274,6 +289,12 @@ outputs:
             - path: /var/log/cinder
               owner: cinder:cinder
               recurse: true
+      container_config_scripts:
+        map_merge:
+          - {get_attr: [ContainersCommon, container_config_scripts]}
+          - cinder_ffu_db_sync.sh:
+              mode: "0755"
+              content: { get_file: ../../container_config_scripts/cinder_ffu_db_sync.sh }
       docker_config:
         step_2:
           cinder_api_init_logs:
@@ -286,26 +307,69 @@ outputs:
               - /var/log/containers/httpd/cinder-api:/var/log/httpd:z
             command: ['/bin/bash', '-c', 'chown -R cinder:cinder /var/log/cinder']
         step_3:
-          cinder_api_db_sync:
-            image: *cinder_api_image
-            net: host
-            privileged: false
-            detach: false
-            user: root
-            volumes:
-              list_concat:
-                - {get_attr: [ContainersCommon, volumes]}
-                -
-                  - /var/lib/config-data/cinder/etc/my.cnf.d/tripleo.cnf:/etc/my.cnf.d/tripleo.cnf:ro
-                  - /var/lib/config-data/cinder/etc/cinder/:/etc/cinder/:ro
-                  - /var/log/containers/cinder:/var/log/cinder:z
-                  - /var/log/containers/httpd/cinder-api:/var/log/httpd:z
-            command:
-              - '/usr/bin/bootstrap_host_exec'
-              - 'cinder_api'
-              - "su cinder -s /bin/bash -c 'cinder-manage db sync --bump-versions'"
-            environment:
-              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+          map_merge:
+            - cinder_api_db_sync:
+                start_order: 2
+                image: *cinder_api_image
+                net: host
+                privileged: false
+                detach: false
+                user: root
+                volumes: &cinder_volumes
+                  list_concat:
+                    - {get_attr: [ContainersCommon, volumes]}
+                    -
+                      - /var/lib/config-data/cinder/etc/my.cnf.d/tripleo.cnf:/etc/my.cnf.d/tripleo.cnf:ro
+                      - /var/lib/config-data/cinder/etc/cinder/:/etc/cinder/:ro
+                      - /var/log/containers/cinder:/var/log/cinder:z
+                      - /var/log/containers/httpd/cinder-api:/var/log/httpd:z
+                command:
+                  - '/usr/bin/bootstrap_host_exec'
+                  - 'cinder_api'
+                  - "su cinder -s /bin/bash -c 'cinder-manage db sync --bump-versions'"
+                environment:
+                  TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+            - if:
+                - fast_forward_upgrade
+                - cinder_api_online_data_migrations_stein:
+                    start_order: 0
+                    image: &cinder_api_image_stein {get_param: ContainerCinderApiImageStein}
+                    net: host
+                    privileged: false
+                    detach: false
+                    user: root
+                    volumes:
+                      list_concat:
+                        - *cinder_volumes
+                        -
+                          - /var/lib/container-config-scripts/:/container-config-scripts/:ro
+                    command:
+                      - '/usr/bin/bootstrap_host_exec'
+                      - 'cinder_api'
+                      - '/container-config-scripts/cinder_ffu_db_sync.sh'
+                      - 'online'
+                    environment:
+                      TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+                  cinder_api_db_sync_stein:
+                    start_order: 1
+                    image: *cinder_api_image_stein
+                    net: host
+                    privileged: false
+                    detach: false
+                    user: root
+                    volumes:
+                      list_concat:
+                        - *cinder_volumes
+                        -
+                          - /var/lib/container-config-scripts/:/container-config-scripts/:ro
+                    command:
+                      - '/usr/bin/bootstrap_host_exec'
+                      - 'cinder_api'
+                      - '/container-config-scripts/cinder_ffu_db_sync.sh'
+                      - 'sync'
+                    environment:
+                      TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+                - {}
         step_4:
           cinder_api:
             image: *cinder_api_image
@@ -319,19 +383,15 @@ outputs:
               test: /openstack/healthcheck
             volumes:
               list_concat:
-                - {get_attr: [ContainersCommon, volumes]}
+                - {get_attr: [CinderCommon, cinder_common_volumes]}
                 -
                   - /var/lib/kolla/config_files/cinder_api.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/cinder:/var/lib/kolla/config_files/src:ro
-                  - /var/log/containers/cinder:/var/log/cinder:z
                   - /var/log/containers/httpd/cinder-api:/var/log/httpd:z
                 - if:
                     - internal_tls_enabled
-                    - - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
-                    - []
-                - if:
-                    - internal_tls_enabled
-                    - - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
+                    -
+                      - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
+                      - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
                     - []
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
@@ -373,6 +433,7 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
             - { 'path': /var/log/containers/cinder, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/log/containers/httpd/cinder-api, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
@@ -400,52 +461,6 @@ outputs:
                   - cinder_api
                   - cinder_api_cron
                 tripleo_delegate_to: "{{ groups['cinder_api'] | default([]) }}"
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-          block:
-            - name: Check is cinder_api is deployed
-              command: systemctl is-enabled --quiet openstack-cinder-api
-              failed_when: false
-              register: cinder_api_enabled_result
-            - name: Set fact cinder_api_enabled
-              set_fact:
-                cinder_api_enabled: "{{ cinder_api_enabled_result.rc == 0 }}"
-        - name: Stop openstack-cinder-api
-          service: name=openstack-cinder-api state=stopped
-          when:
-            - step|int == 1
-            - release == 'rocky'
-            - cinder_api_enabled|bool
-        - name: Extra removal of services for cinder
-          shell: |
-            cinder-manage service list |\
-            grep -v Binary | tr '@' ' ' |\
-            awk '{print $1 " " $2}' |\
-            while read i ; do cinder-manage service remove $i ; done
-          when:
-            - step|int == 5
-            - release == 'stein'
-            - is_bootstrap_node|bool
-        - name: Extra migration for cinder
-          command: cinder-manage db online_data_migrations
-          when:
-            - step|int == 5
-            - release == 'stein'
-            - is_bootstrap_node|bool
-        - name: Cinder package update
-          package:
-            name: 'openstack-cinder*'
-            state: latest
-          when:
-            - step|int == 6
-            - is_bootstrap_node|bool
-        - name: Cinder db sync
-          command: cinder-manage db sync
-          when:
-            - step|int == 8
-            - is_bootstrap_node|bool
       external_deploy_tasks:
         - name: Manage Cinder Volume Type
           become: true

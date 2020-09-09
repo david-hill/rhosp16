@@ -63,6 +63,9 @@ resources:
       RoleName: {get_param: RoleName}
       RoleParameters: {get_param: RoleParameters}
 
+  CinderCommon:
+    type: ./cinder-common-container-puppet.yaml
+
 outputs:
   role_data:
     description: Role data for the Cinder Scheduler role.
@@ -121,11 +124,9 @@ outputs:
             healthcheck: {get_attr: [ContainersCommon, healthcheck_rpc_port]}
             volumes:
               list_concat:
-                - {get_attr: [ContainersCommon, volumes]}
+                - {get_attr: [CinderCommon, cinder_common_volumes]}
                 -
                   - /var/lib/kolla/config_files/cinder_scheduler.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/cinder:/var/lib/kolla/config_files/src:ro
-                  - /var/log/containers/cinder:/var/log/cinder:z
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
       host_prep_tasks:
@@ -134,6 +135,7 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode }}"
           with_items:
             - { 'path': /var/log/containers/cinder, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
         - name: enable virt_sandbox_use_netlink for healthcheck
@@ -156,21 +158,3 @@ outputs:
                 tripleo_containers_to_stop:
                   - cinder_scheduler
                 tripleo_delegate_to: "{{ groups['cinder_scheduler'] | default([]) }}"
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-          block:
-            - name: Check if cinder_scheduler is deployed
-              command: systemctl is-enabled --quiet openstack-cinder-scheduler
-              failed_when: false
-              register: cinder_scheduler_enabled_result
-            - name: Set fact cinder_scheduler_enabled
-              set_fact:
-                cinder_scheduler_enabled: "{{ cinder_scheduler_enabled_result.rc == 0 }}"
-        - name: Stop openstack-cinder-scheduler
-          service: name=openstack-cinder-scheduler state=stopped enabled=no
-          when:
-            - step|int == 1
-            - release == 'rocky'
-            - cinder_scheduler_enabled|bool

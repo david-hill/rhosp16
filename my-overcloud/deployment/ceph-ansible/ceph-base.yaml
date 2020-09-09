@@ -44,7 +44,7 @@ parameters:
       Type of update, to differentiate between UPGRADE and UPDATE cases
       when StackAction is UPDATE (both are the same stack action).
     constraints:
-    - allowed_values: ['', 'UPGRADE', 'FASTFORWARDUPGRADE']
+    - allowed_values: ['', 'UPGRADE']
     default: ''
   NodeDataLookup:
     type: json
@@ -201,6 +201,10 @@ parameters:
   ContainerCephDaemonImage:
     description: image
     type: string
+  ContainerCeph3DaemonImage:
+    description: image
+    type: string
+    default: ''
   CephAnsiblePlaybookVerbosity:
     default: 1
     description: The number of '-v', '-vv', etc. passed to ansible-playbook command
@@ -298,6 +302,13 @@ parameters:
       package. This value can be used by tripleo-validations to double check
       the right ceph-ansible version is installed.
     default: 'centos-ceph-nautilus'
+  CephAnsibleWarning:
+    type: boolean
+    description: |
+      In particular scenarios we want this validation to show the warning but
+      don't fail because the package is installed on the system but repos are
+      disabled.
+    default: true
   CinderEnableRbdBackend:
     default: false
     description: Whether to enable or not the Rbd backend for Cinder
@@ -333,6 +344,7 @@ parameter_groups:
   - SwiftFetchDirPutTempurl
 
 conditions:
+  fast_forward_upgrade: {not: {equals: [{get_param: ContainerCeph3DaemonImage},'']}}
   deprecated_data_pool_pgnum: {not: {equals: [{get_param: ManilaCephFSDataPoolPGNum}, 128]}}
   deprecated_metadata_pool_pgnum: {not: {equals: [{get_param: ManilaCephFSMetadataPoolPGNum}, 128]}}
   dashboard_is_enabled: {equals: [{get_param: CephEnableDashboard}, true]}
@@ -347,10 +359,6 @@ conditions:
       equals:
         - {get_param: CephAnsibleSkipTags}
         - ''
-  ceph_config_overrides_with_sections:
-    yaql:
-      data: {get_param: CephConfigOverrides}
-      expression: $.data.keys().any(predicate => $ in ['global', 'mon', 'mgr', 'osd', 'mds', 'client'])
   ceph_authenticated_registry:
       and:
       - not:
@@ -381,47 +389,57 @@ resources:
         host:
           if:
           - custom_registry_host
-          - yaql:
-              expression: let(location => $.data.rightSplit(':', 1)[0]) -> regex('(?:https?://)?(.*?)/(.*)').split($location)[1]
-              data: {get_param: ContainerCephDaemonImage}
+          -
+            if:
+            - fast_forward_upgrade
+            - yaql:
+                expression: let(location => $.data.rightSplit(':', 1)[0]) -> regex('(?:https?://)?(.*?)/(.*)').split($location)[1]
+                data: {get_param: ContainerCeph3DaemonImage}
+            - yaql:
+                expression: let(location => $.data.rightSplit(':', 1)[0]) -> regex('(?:https?://)?(.*?)/(.*)').split($location)[1]
+                data: {get_param: ContainerCephDaemonImage}
           - docker.io
         image:
           if:
           - custom_registry_host
-          - yaql:
-              expression: let(location => $.data.rightSplit(':', 1)[0]) -> regex('(?:https?://)?(.*?)/(.*)').split($location)[2]
-              data: {get_param: ContainerCephDaemonImage}
-          - yaql:
-              expression: $.data.rightSplit(':', 1)[0]
-              data: {get_param: ContainerCephDaemonImage}
+          -
+            if:
+            - fast_forward_upgrade
+            - yaql:
+                expression: let(location => $.data.rightSplit(':', 1)[0]) -> regex('(?:https?://)?(.*?)/(.*)').split($location)[2]
+                data: {get_param: ContainerCeph3DaemonImage}
+            - yaql:
+                expression: let(location => $.data.rightSplit(':', 1)[0]) -> regex('(?:https?://)?(.*?)/(.*)').split($location)[2]
+                data: {get_param: ContainerCephDaemonImage}
+          -
+            if:
+            - fast_forward_upgrade
+            - yaql:
+                expression: $.data.rightSplit(':', 1)[0]
+                data: {get_param: ContainerCeph3DaemonImage}
+            - yaql:
+                expression: $.data.rightSplit(':', 1)[0]
+                data: {get_param: ContainerCephDaemonImage}
         image_tag:
-          yaql:
-            expression: $.data.rightSplit(':', 1)[1]
-            data: {get_param: ContainerCephDaemonImage}
+          if:
+          - fast_forward_upgrade
+          - yaql:
+              expression: $.data.rightSplit(':', 1)[1]
+              data: {get_param: ContainerCeph3DaemonImage}
+          - yaql:
+              expression: $.data.rightSplit(':', 1)[1]
+              data: {get_param: ContainerCephDaemonImage}
 
   DefaultCephConfigOverrides:
     type: OS::Heat::Value
     properties:
       type: json
       value:
-        global:
-          osd_pool_default_size: {get_param: CephPoolDefaultSize}
-          osd_pool_default_pg_num: {get_param: CephPoolDefaultPgNum}
-          osd_pool_default_pgp_num: {get_param: CephPoolDefaultPgNum}
-          rgw_keystone_api_version: 3
-          rgw_keystone_url: {get_param: [EndpointMap, KeystoneInternal, uri_no_suffix]}
-          rgw_keystone_accepted_roles: 'member, Member, admin'
-          rgw_keystone_accepted_admin_roles: ResellerAdmin, swiftoperator
-          rgw_keystone_admin_domain: default
-          rgw_keystone_admin_project: service
-          rgw_keystone_admin_user: swift
-          rgw_keystone_admin_password: {get_param: SwiftPassword}
-          rgw_keystone_implicit_tenants: 'true'
-          rgw_keystone_revocation_interval: '0'
-          rgw_s3_auth_use_keystone: 'true'
-          rgw_swift_versioning_enabled: 'true'
-          rgw_swift_account_in_url: 'true'
-          rgw_trust_forwarded_https: 'true'
+        vars:
+          global:
+            osd_pool_default_size: {get_param: CephPoolDefaultSize}
+            osd_pool_default_pg_num: {get_param: CephPoolDefaultPgNum}
+            osd_pool_default_pgp_num: {get_param: CephPoolDefaultPgNum}
 
   CephBasePoolVars:
     type: OS::Heat::Value
@@ -551,20 +569,6 @@ resources:
             list_join:
               - ','
               - get_param: [ServiceData, net_cidr_map, {get_param: [ServiceNetMap, CephClusterNetwork]}]
-          ceph_conf_overrides:
-            if:
-            - ceph_config_overrides_with_sections
-            - yaql:
-                data:
-                  default:
-                    map_merge:
-                    - {get_attr: [DefaultCephConfigOverrides, value]}
-                  overrides: {get_param: CephConfigOverrides}
-                expression: $.data.default.mergeWith($.data.overrides)
-            - global:
-                map_merge:
-                - {get_attr: [DefaultCephConfigOverrides, value, global]}
-                - {get_param: CephConfigOverrides}
           ip_version:
             if:
             - {get_param: CephIPv6}
@@ -578,7 +582,16 @@ outputs:
     description: Role data for the Ceph base service.
     value:
       service_name: ceph_base
-      upgrade_tasks: []
+      upgrade_tasks:
+        - name: Reinstall ceph-common package which was removed in tripleo-packages-baremetal-puppet.yaml workaround
+          package:
+            name:
+              - ceph-common
+            state: present
+          when:
+            - step|int == 1
+            - ansible_distribution_major_version == '8'
+      post_upgrade_tasks: []
       puppet_config:
         config_image: ''
         config_volume: ''
@@ -591,13 +604,14 @@ outputs:
           tags:
             - ceph
             - ceph_systemd
+            - ceph_fstobs
           block:
             - name: ensure ceph-ansible is installed
               include_role:
                 role: ceph
                 tasks_from: ceph-ansible-installed
               vars:
-                fail_without_ceph_ansible: true
+                fail_without_ceph_ansible: {get_param: CephAnsibleWarning}
                 ceph_ansible_repo: {get_param: CephAnsibleRepo}
               tags:
                 - opendev-validation
@@ -618,6 +632,8 @@ outputs:
                 ceph_pools: {get_attr: [CephBasePoolVars, value, vars]}
                 manila_pools: {get_attr: [CephManilaPoolVars, value, vars]}
                 ceph_keys: {get_attr: [CephKeyVars, value, vars]}
+                ceph_default_overrides: {get_attr: [DefaultCephConfigOverrides, value, vars]}
+                ceph_config_overrides: {get_param: CephConfigOverrides}
             - name: set ceph-ansible facts
               set_fact:
                 blacklisted_hostnames: {get_param: DeploymentServerBlacklist}
@@ -656,6 +672,7 @@ outputs:
           tags:
             - ceph
             - ceph_systemd
+            - ceph_fstobs
           block:
             - name: set ceph-ansible facts
               set_fact:
@@ -664,7 +681,7 @@ outputs:
                 ceph_ansible_environment_variables:
                   yaql:
                     data: {get_param: CephAnsibleEnvironmentVariables}
-                    expression: $.data.items().select($[0] + '=' + $[1])
+                    expression: $.data.items().select($.join('='))
                 ceph_ansible_skip_tags: {get_param:  CephAnsibleSkipTags}
             - name: get ssh private key
               include_role:
@@ -684,7 +701,7 @@ outputs:
               vars:
                 fail_on_ceph_health_err: true
                 osd_percentage_min: {get_param: CephOsdPercentageMin}
-              delegate_to: "{{ groups['ceph_mon'][0] }}"
+                tripleo_delegate_to: "{{ groups['ceph_mon'] | default([]) }}"
               tags:
                 - opendev-validation
                 - opendev-validation-ceph
@@ -708,6 +725,18 @@ outputs:
             - name: set ceph_ansible_playbooks_default
               set_fact:
                 ceph_ansible_playbooks_default: ["/usr/share/ceph-ansible/infrastructure-playbooks/docker-to-podman.yml"]
+        - when: step|int == 0
+          tags:
+            - never
+            - ceph_fstobs
+          block:
+            - name: stop if _limit is unset
+              fail:
+                msg: The ceph-ansible filestore to bluestore playbook limit is not set; please use -e ceph_ansible_limit=##nodename##
+              when: (ceph_ansible_limit is not defined) or (ceph_ansible_limit|length == 0)
+            - name: set ceph_ansible_playbooks_default
+              set_fact:
+                ceph_ansible_playbooks_default: ["/usr/share/ceph-ansible/infrastructure-playbooks/filestore-to-bluestore.yml"]
         - when: step|int == 0
           tags: ceph
           block:

@@ -236,6 +236,16 @@ parameters:
     default: 4
     description: The IP version that will be used for PXE booting.
     type: string
+  IronicDhcpv6StatefulAddressCount:
+    default: 4
+    description: Number of IPv6 addresses to allocate for ports created for
+                 provisioning, cleaning, rescue or inspection on DHCPv6-stateful
+                 networks. Different stages of the chain-loading process will
+                 request addresses with different CLID/IAID. Due to non-
+                 identical identifiers multiple addresses must be reserved for
+                 the host to ensure each step of the boot process can
+                 successfully lease addresses.
+    type: string
 
 conditions:
   default_deploy_interface_unset: {equals : [{get_param: IronicDefaultDeployInterface}, '']}
@@ -404,6 +414,7 @@ outputs:
             ironic::neutron::project_name: 'service'
             ironic::neutron::user_domain_name: 'Default'
             ironic::neutron::project_domain_name: 'Default'
+            ironic::neutron::dhcpv6_stateful_address_count: {get_param: IronicDhcpv6StatefulAddressCount}
             ironic::service_catalog::auth_url: {get_param: [EndpointMap, KeystoneInternal, uri_no_suffix]}
             ironic::service_catalog::username: 'ironic'
             ironic::service_catalog::password: {get_param: IronicPassword}
@@ -478,6 +489,7 @@ outputs:
             export OS_USERNAME=$(crudini --get /etc/ironic/ironic.conf swift username)
             export OS_PASSWORD=$(crudini --get /etc/ironic/ironic.conf swift password)
             export OS_AUTH_URL=$(crudini --get /etc/ironic/ironic.conf swift auth_url)
+            export OS_INTERFACE=internal
             export OS_AUTH_TYPE=password
             export OS_IDENTITY_API_VERSION=3
 
@@ -553,6 +565,7 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
             - { 'path': /var/log/containers/ironic, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/lib/ironic, 'setype': svirt_sandbox_file_t }
@@ -584,28 +597,17 @@ outputs:
           with_items:
             - httpboot
             - tftpboot
-      fast_forward_upgrade_tasks:
-        - when:
+        # TODO(emilien): remove the cleanup tasks after Ussuri
+        # https://bugs.launchpad.net/tripleo/+bug/1868934
+        - name: Cleanup unnecessary container config-data
+          block: &ironic_config_data_cleanup
+            - name: Remove /var/lib/config-data/puppet-generated/ironic/var
+              file:
+                path: /var/lib/config-data/puppet-generated/ironic/var
+                state: absent
+      upgrade_tasks:
+        - name: Cleanup unnecessary container config-data
+          when:
             - step|int == 0
-            - release == 'rocky'
-          block:
-            - name: Check if ironic_conductor is deployed
-              command: systemctl is-enabled --quiet openstack-ironic-conductor
-              failed_when: false
-              register: ironic_conductor_enabled_result
-            - name: Set fact ironic_conductor_enabled
-              set_fact:
-                ironic_conductor_enabled: "{{ ironic_conductor_enabled_result.rc == 0 }}"
-        - name: Stop openstack-ironic-conductor
-          service: name=openstack-ironic-conductor state=stopped enabled=no
-          when:
-            - step|int == 1
-            - release == 'rocky'
-            - ironic_conductor_enabled|bool
-        - name: Ironic packages update
-          package:
-            name: 'openstack-ironic*'
-            state: latest
-          when:
-            - step|int == 6
-            - is_bootstrap_node|bool
+          tags: common
+          block: *ironic_config_data_cleanup

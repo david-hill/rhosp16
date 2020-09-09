@@ -2,7 +2,6 @@ heat_template_version: rocky
 
 description: >
   OpenStack Sahara service configured with Puppet
-
 parameters:
   ContainerSaharaApiImage:
     description: image
@@ -68,6 +67,10 @@ parameters:
       e.g. { sahara-context_is_admin: { key: context_is_admin, value: 'role:admin' } }
     default: {}
     type: json
+  EnableSahara:
+    default: false
+    description: Forcefully keep Sahara enabled on upgrade
+    type: boolean
 
 resources:
 
@@ -103,6 +106,20 @@ outputs:
               password: {get_param: SaharaPassword}
           region: {get_param: KeystoneRegion}
           service: 'data-processing'
+      upgrade_tasks:
+        when: step == '1'
+        block:
+          - name: set fact for EnableSahara
+            set_fact:
+              enable_sahara: {get_param: EnableSahara}
+          - name: fail unless EnableSahara is enabled
+            fail:
+              msg: >
+                Sahara has been removed from OSP 16 and should not be
+                upgraded. If you intend to keep Sahara on OSP 16,
+                knowing that it won't be supported, you should set the
+                EnableSahara parameter to true.
+            when: not enable_sahara
       monitoring_subscription: {get_param: MonitoringSubscriptionSaharaApi}
       config_settings:
         map_merge:
@@ -209,36 +226,7 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
             - { 'path': /var/log/containers/sahara, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/lib/sahara, 'setype': svirt_sandbox_file_t }
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-          block:
-            - name: FFU check openstack-sahara-api is enabled
-              command: systemctl is-enabled openstack-sahara-api
-              failed_when: false
-              register: sahara_api_enabled_result
-            - name: Set fact sahara_api_enabled
-              set_fact:
-                sahara_api_enabled: "{{ sahara_api_enabled_result.rc == 0 }}"
-        - name: FFU stop and disable openstack-sahara-api
-          service: name=openstack-sahara-api state=stopped enabled=no
-          when:
-            - step|int == 1
-            - release == 'rocky'
-            - sahara_api_enabled|bool
-        - name: FFU Sahara package update
-          package:
-            name: 'openstack-sahara*'
-            state: latest
-          when:
-            - step|int == 6
-            - is_bootstrap_node|bool
-        - name: FFU Sahara db upgrade
-          command: sahara-db-manage --config-file /etc/sahara/sahara.conf upgrade head
-          when:
-            - step|int == 8
-            - is_bootstrap_node|bool
