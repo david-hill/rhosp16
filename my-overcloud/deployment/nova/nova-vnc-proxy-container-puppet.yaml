@@ -50,7 +50,7 @@ parameters:
     description: If set to true and if EnableInternalTLS is enabled, it will
                  enable TLS transaport for libvirt VNC and configure the
                  relevant keys for libvirt.
-  InternalTLSVncCAFile:
+  InternalTLSVncProxyCAFile:
     default: '/etc/pki/CA/certs/vnc.crt'
     type: string
     description: Specifies the CA cert to use for VNC TLS.
@@ -61,7 +61,7 @@ parameters:
                  This file will be symlinked to the default CA path,
                  which is /etc/pki/libvirt-vnc/ca-cert.pem.
                  This parameter should be used if the default (which comes from
-                 the InternalTLSVncCAFile parameter) is not desired. The current
+                 the InternalTLSVncProxyCAFile parameter) is not desired. The current
                  default reflects TripleO's default CA, which is FreeIPA.
                  It will only be used if internal TLS is enabled.
   StackUpdateType:
@@ -70,7 +70,7 @@ parameters:
       Type of update, to differentiate between UPGRADE and UPDATE cases
       when StackAction is UPDATE (both are the same stack action).
     constraints:
-    - allowed_values: ['', 'UPGRADE', 'FASTFORWARDUPGRADE']
+    - allowed_values: ['', 'UPGRADE']
     default: ''
 
 
@@ -162,7 +162,7 @@ outputs:
                 tripleo::certmonger::ca::libvirt_vnc::origin_ca_pem:
                   if:
                     - libvirt_vnc_specific_ca_unset
-                    - get_param: InternalTLSVncCAFile
+                    - get_param: InternalTLSVncProxyCAFile
                     - get_param: LibvirtVncCACert
                 tripleo::certmonger::libvirt_vnc_dirs::certificate_dir: '/etc/pki/libvirt-vnc'
                 libvirt_vnc_certificates_specs:
@@ -170,7 +170,7 @@ outputs:
                     cacertfile:
                       if:
                         - libvirt_vnc_specific_ca_unset
-                        - get_param: InternalTLSVncCAFile
+                        - get_param: InternalTLSVncProxyCAFile
                         - null
                     service_certificate: '/etc/pki/libvirt-vnc/client-cert.pem'
                     service_key: '/etc/pki/libvirt-vnc/client-key.pem'
@@ -262,7 +262,7 @@ outputs:
                             CACERT:
                               if:
                                 - libvirt_vnc_specific_ca_unset
-                                - get_param: InternalTLSVncCAFile
+                                - get_param: InternalTLSVncProxyCAFile
                                 - get_param: LibvirtVncCACert
                       - /etc/pki/libvirt-vnc/client-cert.pem:/etc/pki/libvirt-vnc/client-cert.pem:ro
                       - /etc/pki/libvirt-vnc/client-key.pem:/etc/pki/libvirt-vnc/client-key.pem:ro
@@ -285,6 +285,7 @@ outputs:
       deploy_steps_tasks:
         - name: validate nova-vnc-proxy container state
           when:
+            - not (ansible_check_mode | bool)
             - container_cli == 'podman'
             - not container_healthcheck_disabled
             - step|int == 5
@@ -321,24 +322,6 @@ outputs:
                 state: present
                 shell: /sbin/nologin
                 comment: qemu user
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-          block:
-            - name: Check if nova vncproxy is deployed
-              command: systemctl is-enabled --quiet openstack-nova-novncproxy
-              failed_when: false
-              register: nova_vncproxy_enabled_result
-            - name: Set fact nova_vncproxy_enabled
-              set_fact:
-                nova_vncproxy_enabled: "{{ nova_vncproxy_enabled_result.rc == 0 }}"
-        - name: Stop and disable nova-novncproxy service
-          service: name=openstack-nova-novncproxy state=stopped
-          when:
-            - step|int == 1
-            - release == 'rocky'
-            - nova_vncproxy_enabled|bool
       external_upgrade_tasks:
         - when:
             - step|int == 1

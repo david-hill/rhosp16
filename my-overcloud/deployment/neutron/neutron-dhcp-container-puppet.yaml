@@ -141,6 +141,12 @@ parameters:
                  no AZs will be configured for Neutron network services.
     default: ''
     type: string
+  NeutronDhcpAgentDnsmasqEnableAddr6List:
+    default: true
+    description: |
+      Enable dhcp-host entry with list of addresses when port has multiple
+      IPv6 addresses in the same subnet.
+    type: boolean
 
 conditions:
 
@@ -204,6 +210,7 @@ outputs:
             neutron::agents::dhcp::dnsmasq_dns_servers: {get_param: NeutronDhcpAgentDnsmasqDnsServers}
             neutron::agents::dhcp::interface_driver: {get_param: NeutronInterfaceDriver}
             neutron::agents::dhcp::dhcp_broadcast_reply: {get_param: NeutronDhcpServerBroadcastReply}
+            neutron::agents::dhcp::dnsmasq_enable_addr6_list: {get_param: NeutronDhcpAgentDnsmasqEnableAddr6List}
             neutron::agents::dhcp::debug:
               if:
               - service_debug_unset
@@ -304,31 +311,6 @@ outputs:
             - path: /etc/pki/tls/private/neutron.key
               owner: neutron:neutron
       container_config_scripts: {get_attr: [ContainersCommon, container_config_scripts]}
-      deploy_steps_tasks:
-        - when: step|int == 1
-          block:
-            - name: set conditions
-              set_fact:
-                dnsmasq_wrapper_enabled: {get_param: NeutronEnableDnsmasqDockerWrapper}
-                haproxy_wrapper_enabled: {get_param: NeutronEnableHaproxyDockerWrapper}
-                debug_enabled: {get_param: Debug}
-                docker_additional_sockets: {get_param: DockerAdditionalSockets}
-            - name: create kill_scripts directory within /var/lib/neutron
-              file:
-                state: directory
-                path: /var/lib/neutron/kill_scripts
-            - name: create dnsmasq dhcp kill script
-              when: dnsmasq_wrapper_enabled|bool
-              copy:
-                dest: /var/lib/neutron/kill_scripts/dnsmasq-kill
-                mode: 0755
-                content: {get_file: ./kill-script}
-            - name: create haproxy kill script
-              when: haproxy_wrapper_enabled|bool
-              copy:
-                dest: /var/lib/neutron/kill_scripts/haproxy-kill
-                mode: 0755
-                content: {get_file: ./kill-script}
       docker_config:
         step_2:
           create_dnsmasq_wrapper:
@@ -414,39 +396,49 @@ outputs:
               command: ip netns add ns_temp
               register: ipnetns_add_result
               failed_when: false
-          - - name: remove temp namespace
+            - name: remove temp namespace
               command: ip netns delete ns_temp
               failed_when: false
-              when: ipnetns_add_result.rc == 0
-          - - name: create /var/lib/neutron
+              when:
+                - ipnetns_add_result.rc is defined
+                - ipnetns_add_result.rc == 0
+            - name: create /var/lib/neutron
               file:
                 path: /var/lib/neutron
                 state: directory
                 setype: svirt_sandbox_file_t
-          - - name: enable virt_sandbox_use_netlink for healtcheck
+            - name: enable virt_sandbox_use_netlink for healtcheck
               seboolean:
                 name: virt_sandbox_use_netlink
                 persistent: yes
                 state: yes
-      upgrade_tasks: []
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-          block:
-            - name: Check if neutron_dhcp_agent is deployed
-              command: systemctl is-enabled --quiet neutron-dhcp-agent
-              failed_when: false
-              register: neutron_dhcp_agent_enabled_result
-            - name: Set fact neutron_dhcp_agent_enabled
+            - name: set conditions
               set_fact:
-                neutron_dhcp_agent_enabled: "{{ neutron_dhcp_agent_enabled_result.rc == 0 }}"
-        - name: Stop neutron_dhcp_agent
-          service: name=neutron-dhcp-agent state=stopped enabled=no
-          when:
-            - step|int == 2
-            - release == 'rocky'
-            - neutron_dhcp_agent_enabled|bool
+                dnsmasq_wrapper_enabled: {get_param: NeutronEnableDnsmasqDockerWrapper}
+                haproxy_wrapper_enabled: {get_param: NeutronEnableHaproxyDockerWrapper}
+                debug_enabled:
+                  if:
+                    - service_debug_unset
+                    - {get_param: Debug }
+                    - {get_param: NeutronWrapperDebug}
+                docker_additional_sockets: {get_param: DockerAdditionalSockets}
+            - name: create kill_scripts directory within /var/lib/neutron
+              file:
+                state: directory
+                path: /var/lib/neutron/kill_scripts
+            - name: create dnsmasq dhcp kill script
+              when: dnsmasq_wrapper_enabled|bool
+              copy:
+                dest: /var/lib/neutron/kill_scripts/dnsmasq-kill
+                mode: 0755
+                content: {get_file: ./kill-script}
+            - name: create haproxy kill script
+              when: haproxy_wrapper_enabled|bool
+              copy:
+                dest: /var/lib/neutron/kill_scripts/haproxy-kill
+                mode: 0755
+                content: {get_file: ./kill-script}
+      upgrade_tasks: []
       post_upgrade_tasks:
         - name: Check for neutron user
           getent:

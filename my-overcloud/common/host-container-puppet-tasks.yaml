@@ -1,7 +1,7 @@
 - name: Write container-puppet-tasks json file for {{ansible_hostname | lower}} step {{step}}
   no_log: True
   copy:
-    content: "{{host_container_puppet_tasks|to_nice_json}}"
+    content: "{{lookup ('vars', 'host_container_puppet_tasks_' ~ step, default=[]) | to_nice_json}}"
     dest: "/var/lib/container-puppet/container-puppet-tasks{{step}}.json"
     force: yes
     mode: '0600'
@@ -10,7 +10,7 @@
 
 - name: Block for container-puppet tasks (bootstrap tasks) for step {{ step }} with paunch
   when:
-    - enable_paunch|default(true)
+    - enable_paunch|bool
   tags:
     - container_config_tasks
   block:
@@ -31,6 +31,8 @@
         PROCESS_COUNT: "{{ docker_puppet_process_count }}"
       register: bootstrap_tasks_async_result
       no_log: true
+      when:
+        - not (ansible_check_mode | bool)
 
     - name: Wait for container-puppet tasks (bootstrap tasks) for step {{ step }} to finish
       async_status:
@@ -39,6 +41,8 @@
       until: bootstrap_tasks_outputs.finished
       retries: 1200
       delay: 3
+      when:
+        - not (ansible_check_mode | bool)
 
     - name: "Debug output for task: Run container-puppet tasks (bootstrap tasks) for step {{ step }}"
       debug:
@@ -49,7 +53,7 @@
 
 - name: Block for container-puppet tasks (bootstrap tasks) for step {{ step }} with tripleo-ansible
   when:
-    - not enable_paunch|default(true)
+    - not (enable_paunch|bool)
   tags:
     - container_config_tasks
   block:

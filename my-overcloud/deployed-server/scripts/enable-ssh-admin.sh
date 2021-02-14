@@ -3,6 +3,7 @@
 set -eu
 
 # whitespace (space or newline) separated list
+OVERCLOUD_PLAN=${OVERCLOUD_PLAN:-"overcloud"}
 OVERCLOUD_HOSTS=${OVERCLOUD_HOSTS:-""}
 OVERCLOUD_SSH_USER=${OVERCLOUD_SSH_USER:-"$USER"}
 # this is just for compatibility with CI
@@ -13,6 +14,8 @@ SSH_TIMEOUT_OPTIONS=${SSH_TIMEOUT_OPTIONS:-"-o ConnectionAttempts=6 -o ConnectTi
 SSH_HOSTKEY_OPTIONS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 SHORT_TERM_KEY_COMMENT="TripleO split stack short term key"
 SLEEP_TIME=5
+# The default is defined in tripleoclient/constants.py
+ENABLE_SSH_ADMIN_TIMEOUT=${ENABLE_SSH_ADMIN_TIMEOUT:-"600"}
 
 # needed to handle where python lives
 function get_python() {
@@ -34,7 +37,24 @@ function overcloud_ssh_key_json {
 
 function workflow_finished {
     local execution_id="$1"
-    openstack workflow execution show -f shell $execution_id | grep 'state="SUCCESS"' > /dev/null
+    counter=$(( $ENABLE_SSH_ADMIN_TIMEOUT / $SLEEP_TIME ))
+
+    while [ $counter -gt 0 ]
+    do
+        RESULT=$(openstack workflow execution show -f value -c State $execution_id)
+        if [ "$RESULT" == "ERROR" ]; then
+            echo "Workflow $execution_id finished with error. Check mistral logs."
+            return 1
+        elif [ "$RESULT" == "SUCCESS" ]; then
+            echo "Workflow $execution_id finished with success."
+            return 0
+        else
+            sleep $SLEEP_TIME
+        fi
+        counter=$(( $counter - 1 ))
+    done
+    echo "Workflow $execution_id did not finish after $ENABLE_SSH_ADMIN_TIMEOUT seconds."
+    return 1
 }
 
 function generate_short_term_keys {
@@ -67,7 +87,7 @@ for HOST in $OVERCLOUD_HOSTS; do
 done
 
 echo "Starting ssh admin enablement workflow"
-EXECUTION_PARAMS="{\"ssh_user\": \"$OVERCLOUD_SSH_USER\", \"ssh_servers\": $(overcloud_ssh_hosts_json), \"ssh_private_key\": $(overcloud_ssh_key_json "$SHORT_TERM_KEY_PRIVATE")}"
+EXECUTION_PARAMS="{\"plan_name\": \"$OVERCLOUD_PLAN\", \"ssh_user\": \"$OVERCLOUD_SSH_USER\", \"ssh_servers\": $(overcloud_ssh_hosts_json), \"ssh_private_key\": $(overcloud_ssh_key_json "$SHORT_TERM_KEY_PRIVATE")}"
 EXECUTION_CREATE_OUTPUT=$(openstack workflow execution create -f shell -d 'deployed server ssh admin creation' tripleo.access.v1.enable_ssh_admin "$EXECUTION_PARAMS")
 echo "$EXECUTION_CREATE_OUTPUT"
 EXECUTION_ID=$(echo "$EXECUTION_CREATE_OUTPUT" | grep '^id=' | awk '-F"' '{ print $2 }')
@@ -78,10 +98,10 @@ if [ -z "$EXECUTION_ID" ]; then
 fi
 
 echo -n "Waiting for the workflow execution to finish (id $EXECUTION_ID)."
-while ! workflow_finished $EXECUTION_ID; do
-    sleep $SLEEP_TIME
-    echo -n .
-done
+if ! workflow_finished $EXECUTION_ID; then
+    exit 1
+fi
+
 echo  # newline after the previous dots
 
 for HOST in $OVERCLOUD_HOSTS; do

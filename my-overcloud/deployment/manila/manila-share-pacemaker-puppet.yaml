@@ -180,7 +180,7 @@ outputs:
               # update (scale-out, etc.)
               TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
           manila_share_restart_bundle:
-            start_order: 1
+            start_order: 3
             config_volume: manila
             detach: false
             net: host
@@ -200,6 +200,7 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
             - { 'path': /var/log/containers/manila, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/lib/manila, 'setype': svirt_sandbox_file_t }
@@ -308,6 +309,7 @@ outputs:
         - name: Create hiera data to upgrade manila_share in a stepwise manner.
           when:
             - step|int == 1
+            - cluster_recreate|bool
           block:
             - name: set manila_share upgrade node facts in a single-node environment
               set_fact:
@@ -322,7 +324,7 @@ outputs:
                 cacheable: no
               when:
                 - groups['manila_share'] | length > 1
-                - item.split('.')[0] in ansible_limit.split(',')
+                - item.split('.')[0] in ansible_limit.split(':')
               loop: "{{ manila_share_node_names }}"
             - fail:
                 msg: >
@@ -372,36 +374,3 @@ outputs:
           when:
             - step|int == 3
           block: *manila_share_fetch_retag_container_tasks
-
-      fast_forward_upgrade_tasks:
-        - name: Check cluster resource status
-          pacemaker_resource:
-            resource: openstack-manila-share
-            state: show
-            check_mode: false
-          failed_when: false
-          register: manila_share_res_result
-          when:
-            - step|int == 0
-            - release == 'rocky'
-            - is_bootstrap_node|bool
-        - name: Set fact manila_share_res
-          set_fact:
-            manila_share_res: "{{ manila_share_res_result.rc == 0 }}"
-          when:
-            - step|int == 0
-            - release == 'rocky'
-            - is_bootstrap_node|bool
-        - name: Disable the openstack-manila-share cluster resource
-          pacemaker_resource:
-            resource: openstack-manila-share
-            state: disable
-            wait_for_resource: true
-          register: manila_share_output
-          retries: 5
-          until: manila_share_output.rc == 0
-          when:
-            - step|int == 2
-            - release == 'rocky'
-            - is_bootstrap_node|bool
-            - manila_share_res|bool

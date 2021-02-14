@@ -72,7 +72,7 @@ parameter_defaults:
   CephPoolDefaultPgNum: 32
   CephPoolDefaultSize: 1
   CephEnableDashboard: true
-  CephAnsibleRepo: "tripleo-centos-ceph-nautilus"
+  CephAnsibleRepo: "rhceph-4-tools-for-rhel-8-x86_64-rpms"
   CinderRbdExtraPools: altrbd,pool2,pool3
   CephPools:
     - name: altrbd
@@ -89,8 +89,6 @@ parameter_defaults:
   # a production deployment. What is here is suitable for
   # developer and CI testing only.
   CephClusterFSID: '4b5c8c0a-ff60-454b-a1b4-9747aa737d19'
-  CephMonKey: 'AQC+Ox1VmEr3BxAALZejqeHj50Nj6wJDvs96OQ=='
-  CephAdminKey: 'AQDLOh1VgEp6FRAAFzT7Zw+Y9V6JJExQAsRnRQ=='
   CephClientKey: 'AQC+vYNXgDAgAhAAc8UoYt+OTz5uhV7ItLdwUw=='
   CephExtraKeys:
     - name: "client.glance"
@@ -128,8 +126,8 @@ parameter_defaults:
       dashboard_enabled: false
   CephAnsiblePlaybookVerbosity: 1
   CephAnsibleEnvironmentVariables:
-    ANSIBLE_SSH_RETRIES: '4'
-    DEFAULT_FORKS: '3'
+    ANSIBLE_SSH_RETRIES: 4
+    DEFAULT_FORKS: 3
   NovaEnableRbdBackend: true
   CinderEnableRbdBackend: true
   CinderBackupBackend: ceph
@@ -164,6 +162,7 @@ parameter_defaults:
   CollectdExtraPlugins:
     - rrdtool
   CollectdEnableSensubility: true
+  CollectdEnableLibpodstats: true
   CollectdAmqpInstances:
     notify:
       notify: true
@@ -171,7 +170,7 @@ parameter_defaults:
       presettle: false
     telemetry:
       format: JSON
-      presettle: true
+      presettle: false
   LoggingServers:
     - host: 127.0.0.1
       port: 24224
@@ -185,7 +184,16 @@ parameter_defaults:
     - tty6
   ContainerCli: podman
   CephConfigOverrides:
+    anotherkey: anothervalue
     global:
       globalkey: globalvalue
     osd:
       osdkey: osdvalue
+    foo: bar
+  NfsUrl: 127.0.0.1
+  CephMsgrSecureMode: true
+  LVMFilterEnabled: true
+  LVMFilterAllowlist:
+    - /dev/loop2
+    - /dev/loop3
+    - /dev/loop4

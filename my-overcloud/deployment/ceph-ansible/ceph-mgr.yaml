@@ -79,7 +79,6 @@ resources:
           dashboard_rgw_api_scheme: {get_param: [EndpointMap, CephRgwInternal, protocol]}
           dashboard_rgw_api_no_ssl_verify: false
           dashboard_port: 8444
-          dashboard_frontend_vip: {get_param: [EndpointMap, CephDashboardInternal, host]}
           dashboard_admin_user_ro: {get_param: CephDashboardAdminRO}
 
 outputs:
@@ -98,7 +97,10 @@ outputs:
         - {get_attr: [CephBase, role_data, external_deploy_tasks]}
         - - name: ceph_mgr_external_deploy_init
             when: step|int == 1
-            tags: ceph
+            tags:
+              - ceph
+              - ceph_fstobs
+              - ceph_systemd
             block:
               - name: set ceph-ansible group vars mgrs
                 set_fact:
@@ -110,6 +112,7 @@ outputs:
                       - {get_attr: [CephMgrAnsibleVars, value, vars]}
                       - dashboard_crt: /etc/pki/tls/certs/ceph_dashboard.crt
                       - dashboard_key: /etc/pki/tls/private/ceph_dashboard.key
+                      - dashboard_protocol: 'https'
                     - {get_attr: [CephMgrAnsibleVars, value, vars]}
               - name: generate ceph-ansible group vars mgrs
                 copy:

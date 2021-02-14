@@ -5,6 +5,7 @@
       include_role:
         name: tripleo-hieradata
     - name: Hiera symlink
+      become: true
       file:
         src: /etc/puppet/hiera.yaml
         dest: /etc/hiera.yaml
@@ -28,3 +29,7 @@
       - service_configs
       - extraconfig
       - role_extraconfig
+- name: Ensure ansible_managed hieradata file exists
+  include_role:
+    name: tripleo-hieradata
+    tasks_from: ansible_hieradata.yml

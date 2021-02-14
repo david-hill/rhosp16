@@ -118,6 +118,9 @@ outputs:
             template: { get_file: ../container_config_scripts/pacemaker_wait_bundle.sh }
             params:
               __PCMKTIMEOUT__: {get_param: PcmkConfigRestartTimeout}
+      wait-port-and-run.sh:
+        mode: "0755"
+        content: { get_file: ../container_config_scripts/wait-port-and-run.sh }
 
   volumes_base:
     description: Base volume list
@@ -147,9 +150,8 @@ outputs:
     value:
       list_concat:
         - *volumes_base
-        - - /etc/ssh/ssh_known_hosts:/etc/ssh/ssh_known_hosts:ro
-          # required for bootstrap_host_exec
-          - /etc/puppet:/etc/puppet:ro
+        # required for bootstrap_host_exec
+        - - /etc/puppet:/etc/puppet:ro
 
   pacemaker_restart_volumes:
     description: Common volumes for the pacemaker restart containers.

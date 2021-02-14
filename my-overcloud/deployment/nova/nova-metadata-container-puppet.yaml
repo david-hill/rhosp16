@@ -200,6 +200,13 @@ outputs:
               dest: "/etc/httpd/conf.d"
               merge: false
               preserve_properties: true
+            - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.modules.d"
+              dest: "/etc/httpd/conf.modules.d"
+              # TODO(emilien) remove optional flag once we get a promotion
+              # https://launchpad.net/bugs/1884115
+              optional: true
+              merge: false
+              preserve_properties: true
             - source: "/var/lib/kolla/config_files/src/*"
               dest: "/"
               merge: true
@@ -240,6 +247,7 @@ outputs:
       deploy_steps_tasks:
         - name: validate nova metadata container state
           when:
+            - not (ansible_check_mode | bool)
             - container_cli == 'podman'
             - not container_healthcheck_disabled
             - step|int == 5
