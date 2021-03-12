@@ -32,12 +32,38 @@ parameter_defaults:
   # Customize bonding options if required (will be ignored if bonds are not used)
   BondInterfaceOvsOptions:
       "bond_mode=balance-tcp lacp=active other-config:lacp-fallback-ab=true"
-  NovaComputeExtraConfig:
+  ComputeExtraConfig:
     nova::compute::reserved_host_memory: 512
   ComputeCount: 2
-  ControllerCount: 3
+  ControllerCount: 1
+  CephStorageCount: 2
   OvercloudCephStorageFlavor: ceph-storage
   OvercloudSwiftStorageFlavor: swift-storage
   OvercloudBlockStorageFlavor: block-storage
   OvercloudControllerFlavor: control
   OvercloudComputeFlavor: compute
+  ComputeParameters:
+    KernelArgs: "default_hugepagesz=1G hugepagesz=1G hugepages=2"
+  HostnameMap:
+    overcloud-controller-0: mod-osp-ctrl1
+    overcloud-controller-1: mod-osp-ctrl2
+    overcloud-controller-2: mod-osp-ctrl3
+    overcloud-novacompute-0: mod-osp-cmpt1
+    overcloud-novacompute-1: mod-osp-cmpt2
+    overcloud-novacompute-2: mod-osp-cmpt3
+    overcloud-novacompute-3: mod-osp-cmpt4
+    overcloud-novacompute-4: mod-osp-cmpt5
+    overcloud-novacompute-5: mod-osp-cmpt6
+    overcloud-novacompute-6: mod-osp-cmpt7
+    overcloud-novacompute-7: mod-osp-cmpt8
+    overcloud-cephstorage-0: mod-osp-stor1
+    overcloud-cephstorage-1: mod-osp-stor2
+    overcloud-cephstorage-2: mod-osp-stor3
+
+  CephAnsibleDisksConfig:
+    devices:
+      - '/dev/vdb'
+      - '/dev/vdc'
+      - '/dev/vdd'
+    osd_scenario: lvm
+    osd_objectstore: bluestore
