@@ -130,10 +130,6 @@ parameters:
     type: boolean
     tags:
       - role_specific
-  NovaComputeLibvirtVifDriver:
-    default: ''
-    description: Libvirt VIF driver configuration for the network
-    type: string
   NovaPCIPassthrough:
     description: >
       List of PCI Passthrough whitelist parameters.
@@ -444,6 +440,20 @@ parameters:
     default: false
     tags:
       - role_specific
+  NovaComputeDisableIrqBalance:
+    default: false
+    description: Whether to disable irqbalance on compute nodes or not. Especially
+                 in Realtime Compute role one wants to keep it disabled.
+    type: boolean
+    tags:
+      - role_specific
+  NovaStatedirOwnershipSkip:
+    type: comma_delimited_list
+    description: >
+      List of paths relative to nova_statedir to ignore when recursively setting the
+      ownership and selinux context.
+    default:
+      - 'triliovault-mounts'
 
   # DEPRECATED: the following options are deprecated and are currently maintained
   # for backwards compatibility. They will be removed in future release.
@@ -547,6 +557,7 @@ resources:
               nova::compute::libvirt::libvirt_cpu_model: NovaLibvirtCPUModels
               nova::compute::libvirt::libvirt_cpu_model_extra_flags: NovaLibvirtCPUModelExtraFlags
               nova::workarounds::never_download_image_if_on_rbd: NovaDisableImageDownloadToRbd
+              compute_disable_irqbalance: NovaComputeDisableIrqBalance
             - values: {get_param: [RoleParameters]}
           - values:
               NovaVcpuPinSet: {get_param: NovaVcpuPinSet}
@@ -625,7 +636,7 @@ resources:
               NovaLibvirtCPUModels: {get_param: NovaLibvirtCPUModels}
               NovaLibvirtCPUModelExtraFlags: {get_param: NovaLibvirtCPUModelExtraFlags}
               NovaDisableImageDownloadToRbd: {get_param: NovaDisableImageDownloadToRbd}
-
+              NovaComputeDisableIrqBalance: {get_param: NovaComputeDisableIrqBalance}
 
 conditions:
   insecure_registry_is_empty: {equals : [{get_param: DockerInsecureRegistryAddress}, []]}
@@ -743,7 +754,6 @@ outputs:
               - enable_live_migration_tunnelled
               - true
               - false
-            nova::compute::neutron::libvirt_vif_driver: {get_param: NovaComputeLibvirtVifDriver}
             # NOTE: bind IP is found in hiera replacing the network name with the
             # local node IP for the given network; replacement examples
             # (eg. for internal_api):
@@ -851,6 +861,10 @@ outputs:
                   expression: str($.data.debug)
                   data:
                     debug: {get_attr: [NovaBase, role_data, config_settings, 'nova::logging::debug']}
+              NOVA_STATEDIR_OWNERSHIP_SKIP:
+                list_join:
+                  - ':'
+                  - {get_param: NovaStatedirOwnershipSkip}
         step_5:
           map_merge:
             - nova_compute:
@@ -1047,6 +1061,51 @@ outputs:
             - name: If instance HA is enabled on the node activate the evacuation completed check
               file: path=/var/lib/nova/instanceha/enabled state=touch
               when: iha_nodes.stdout|lower is search('"'+ansible_hostname|lower+'"')
+          - name: Is irqbalance enabled
+            set_fact:
+              compute_irqbalance_disabled: {get_attr: [RoleParametersValue, value, compute_disable_irqbalance]}
+          - name: disable irqbalance service on compute
+            when: compute_irqbalance_disabled|bool
+            service:
+              name: irqbalance.service
+              state: stopped
+              enabled: no
+      deploy_steps_tasks:
+        - name: validate nova compute container state
+          when:
+            - not (ansible_check_mode | bool)
+            - container_cli == 'podman'
+            - not container_healthcheck_disabled
+            - step|int == 6 #FIXME: there is no step6
+          tags:
+            - opendev-validation
+            - opendev-validation-nova
+          block:
+            - name: Get nova-compute healthcheck status
+              register: nova_compute_healthcheck_state
+              systemd:
+                name: tripleo_nova_compute_healthcheck
+              retries: 10
+              delay: 30
+              until: nova_compute_healthcheck_state.status.ExecMainPID != '0' and
+                nova_compute_healthcheck_state.status.ActiveState in ['inactive', 'failed']
+              failed_when: false
+            - name: Fail if nova-compute healthcheck report failed status
+              fail:
+                msg: nova-compute isn't working (healthcheck failed)
+              when: nova_compute_healthcheck_state.status.ExecMainStatus != '0'
+        - name: manage PMEM namespaces for vPMEM
+          include_role:
+            name: tripleo_nvdimm
+          vars:
+            tripleo_nvdimm_pmem_namespaces: {get_attr: [RoleParametersValue, value, nova_pmem_namespaces]}
+          when:
+            - step|int == 1
+            - tripleo_nvdimm_pmem_namespaces != ''
+        - name: enable/disable ksm
+          when:
+            - step|int == 1
+          block:
           - name: is KSM enabled
             set_fact:
               compute_ksm_enabled: {get_attr: [RoleParametersValue, value, compute_enable_ksm]}
@@ -1109,38 +1168,6 @@ outputs:
               with_items:
                 - ksm.service
                 - ksmtuned.service
-      deploy_steps_tasks:
-        - name: validate nova compute container state
-          when:
-            - not (ansible_check_mode | bool)
-            - container_cli == 'podman'
-            - not container_healthcheck_disabled
-            - step|int == 6 #FIXME: there is no step6
-          tags:
-            - opendev-validation
-            - opendev-validation-nova
-          block:
-            - name: Get nova-compute healthcheck status
-              register: nova_compute_healthcheck_state
-              systemd:
-                name: tripleo_nova_compute_healthcheck
-              retries: 10
-              delay: 30
-              until: nova_compute_healthcheck_state.status.ExecMainPID != '0' and
-                nova_compute_healthcheck_state.status.ActiveState in ['inactive', 'failed']
-              failed_when: false
-            - name: Fail if nova-compute healthcheck report failed status
-              fail:
-                msg: nova-compute isn't working (healthcheck failed)
-              when: nova_compute_healthcheck_state.status.ExecMainStatus != '0'
-        - name: manage PMEM namespaces for vPMEM
-          include_role:
-            name: tripleo_nvdimm
-          vars:
-            tripleo_nvdimm_pmem_namespaces: {get_attr: [RoleParametersValue, value, nova_pmem_namespaces]}
-          when:
-            - step|int == 1
-            - tripleo_nvdimm_pmem_namespaces != ''
       external_post_deploy_tasks: {get_attr: [NovaComputeCommon, nova_compute_common_deploy_steps_tasks]}
       upgrade_tasks:
         - name: Switch compute to hybrid state

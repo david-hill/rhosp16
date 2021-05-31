@@ -31,7 +31,7 @@ parameter_defaults:
   DnsServers: [ "8.8.8.8" ]
   # Customize bonding options if required (will be ignored if bonds are not used)
   BondInterfaceOvsOptions:
-      "bond_mode=balance-tcp lacp=active other-config:lacp-fallback-ab=true"
+    "bond_mode=balance-tcp lacp=active other-config:lacp-fallback-ab=true"
   NovaComputeExtraConfig:
     nova::compute::reserved_host_memory: 512
   ComputeCount: 2
@@ -41,3 +41,29 @@ parameter_defaults:
   OvercloudBlockStorageFlavor: block-storage
   OvercloudControllerFlavor: control
   OvercloudComputeFlavor: compute
+  ComputeParameter:
+    TunedCustomProfile: |
+      [main]
+      summary=A high performance Tuned profile for Overloud Nodes
+      include=throughput-performance
+      [cpu]
+      governor=performance
+      energy_perf_bias=performance
+      min_perf_pct=100
+      force_latency=1
+      [vm]
+      transparent_hugepages=madvise
+      [sysctl]
+      kernel.sched_autogroup_enabled=0
+      kernel.sched_migration_cost_ns=5000000
+      vm.dirty_background_ratio=5
+      vm.dirty_ratio=10
+      [disk-nvme]
+      type=disk
+      devices = nvme*
+      elevator = none
+      readahead = 4096
+      [sysfs]
+      /sys/kernel/mm/ksm/run=0
+    TunedProfileName: overcloud-performance
+
