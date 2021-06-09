@@ -151,7 +151,7 @@ outputs:
                   - python2-openstackclient
                   - openssl
                 state: present
-              when: ansible_distribution_major_version is version(8, '<')
+              when: ansible_facts['distribution_major_version'] is version(8, '<')
 
             - name: Ensure packages required for configuring octavia are present for CentOS/RHEL 8
               package:
@@ -160,7 +160,7 @@ outputs:
                   - python3-openstackclient
                   - openssl
                 state: present
-              when: ansible_distribution_major_version is version(8, '>=')
+              when: ansible_facts['distribution_major_version'] is version(8, '>=')
           when: {get_param: EnablePackageInstall}
         - name: enable virt_sandbox_use_netlink for healthcheck
           seboolean:
@@ -168,3 +168,18 @@ outputs:
             persistent: yes
             state: yes
       upgrade_tasks: []
+      external_upgrade_tasks:
+        - when:
+            - step|int == 1
+          tags:
+            - never
+            - system_upgrade_transfer_data
+            - system_upgrade_stop_services
+          block:
+            - name: Stop octavia api container
+              import_role:
+                name: tripleo-container-stop
+              vars:
+                tripleo_containers_to_stop:
+                  - octavia_worker
+                tripleo_delegate_to: "{{ groups['octavia_worker'] | default([]) }}"

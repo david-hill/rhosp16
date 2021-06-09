@@ -318,6 +318,28 @@ outputs:
             persistent: yes
             state: yes
       upgrade_tasks:
+        # system_upgrade
+        - name: ovn_controller system_upgrade_prepare step 1
+          tags:
+            - never
+            - system_upgrade
+            - system_upgrade_prepare
+          when:
+            - step|int == 1
+          block:
+            - name: Check ovn_controller is running in docker
+              shell: |
+                docker ps | grep ovn_controller
+              register: ovn_controller_running
+              failed_when: false
+            - name: Disable autorestart on ovn_controller container
+              command: docker update --restart=no ovn_controller
+              when: ovn_controller_running.rc == 0
+            - name: Tell ovn_controller to clean up and stop
+              shell: |
+                docker exec -u root ovn_controller bash -c "if [ -f /usr/bin/ovn-appctl ] ; then ovn-appctl -t ovn-controller exit ; else ovs-appctl -t ovn-controller exit ; fi"
+              when: ovn_controller_running.rc == 0
+        # nova_hybrid_state
         - name: Gather missing facts
           setup:
             gather_subset: "distribution"
@@ -339,12 +361,13 @@ outputs:
             - ansible_facts['distribution'] == 'RedHat'
             - ansible_facts['distribution_major_version'] is version('7', '==')
           block:
-            - name: Check if we need to create ovn_controller paunch config
-              stat:
-                path: /var/lib/tripleo-config/docker-container-hybrid_ovn_controller.json
+            - name: Check if ovn_controller is runing with proper image
+              shell:
+                docker ps | grep "{{ovn_controller_image}}"
+              failed_when: false
               register: hybrid_ovn_controller
             - name: Implement the hybrid state for ovn_controller
-              when: not hybrid_ovn_controller.stat.exists
+              when: hybrid_ovn_controller.rc != 0
               block:
                 - name: Update the ovn_controller paunch image in config
                   shell: |

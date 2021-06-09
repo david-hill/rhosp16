@@ -28,3 +28,6 @@ parameter_defaults:
   # repo validation to work.
   CephAnsibleWarning: false
   DnfStreams: [{'module':'container-tools', 'stream':'2.0'},{'module':'virt', 'stream':'8.2'}]
+  CephStorageParameters:
+    UpgradeLeappCommandOptions: " --enablerepo rhel-8-for-x86_64-baseos-rpms --enablerepo rhel-8-for-x86_64-appstream-rpms "
+    DnfStreams: [{'module':'container-tools', 'stream':'2.0'}]

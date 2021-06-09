@@ -98,6 +98,9 @@ outputs:
         - name: add the ipa services for this node in step 1
           when: step|int == 1
           block:
+            - name: Ensure ansible_fqdn is defined
+              set_fact:
+                ansible_fqdn: "{{ ansible_facts['fqdn'] }}"
             - include_role:
                 name: tripleo_ipa_registration
               vars:
@@ -116,9 +119,9 @@ outputs:
             if:
               - idm_server_provided
               - IPA_HOST: {get_param: IdMServer}
-                IPA_USER: "nova/{{ ansible_fqdn }}"
+                IPA_USER: "nova/{{ ansible_facts['fqdn'] }}"
                 KRB5_CLIENT_KTNAME: {get_param: IdMNovaKeytab}
-              - IPA_USER: "nova/{{ ansible_fqdn }}"
+              - IPA_USER: "nova/{{ ansible_facts['fqdn'] }}"
                 KRB5_CLIENT_KTNAME: {get_param: IdMNovaKeytab}
       deploy_steps_tasks:
         - name: enroll the node as an ipa client
@@ -136,6 +139,12 @@ outputs:
                 ipaclient_install_packages: {get_param: IdMInstallClientPackages}
                 ipaclients:
                   - "{{ inventory_hostname }}"
+                ansible_distribution: "{{ ansible_facts['distribution'] }}"
+                ansible_distribution_major_version: "{{ ansible_facts['distribution_major_version'] }}"
+                ansible_distribution_release: "{{ ansible_facts['distribution_release'] }}"
+                ansible_distribution_version: "{{ ansible_facts['distribution_version'] }}"
+                ansible_os_family: "{{ ansible_facts['os_family'] }}"
+                ansible_fqdn: "{{ ipaclient_hostname }}"
               -
                 if:
                 - idm_server_provided
@@ -147,6 +156,12 @@ outputs:
               stat:
                 path: /etc/ipa/default.conf
               register: ipa_conf_exists
+            - name: install openssl-perl
+              package:
+                name: openssl-perl
+                state: present
+              when:
+                - ipaclient_install_packages|bool
             - block:
                 - name: register as an ipa client
                   import_role:

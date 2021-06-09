@@ -64,6 +64,12 @@ parameters:
     description: Timeout (seconds) for the OS upgrade phase via Leapp
     type: number
     default: 3600
+  UpgradeLeappPostRebootDelay:
+    description: |
+      Maximum (seconds) to wait for machine to reboot and respond to a test
+      command.
+    type: number
+    default: 120
   UpgradeLeappToRemove:
     default: []
     description: List of packages to remove during Leapp upgrade.
@@ -116,6 +122,27 @@ parameters:
                  is not specified 'common' will be used instead.
     type: json
 
+resources:
+  RoleParametersValue:
+    type: OS::Heat::Value
+    properties:
+      type: json
+      value:
+        map_replace:
+          - map_replace:
+            - dnf_module_list: DnfStreams
+              upgrade_leapp_command_options: UpgradeLeappCommandOptions
+              upgrade_leapp_to_remove: UpgradeLeappToRemove
+              upgrade_leapp_to_install: UpgradeLeappToInstall
+              upgrade_init_command: UpgradeInitCommand
+            - values: {get_param: [RoleParameters]}
+          - values:
+              DnfStreams: {get_param: DnfStreams}
+              UpgradeLeappCommandOptions: {get_param: UpgradeLeappCommandOptions}
+              UpgradeLeappToRemove: {get_param: UpgradeLeappToRemove}
+              UpgradeLeappToInstall: {get_param: UpgradeLeappToInstall}
+              UpgradeInitCommand: {get_param: UpgradeInitCommand}
+
 outputs:
   role_data:
     description: Role data for the TripleO package settings
@@ -143,8 +170,10 @@ outputs:
                  ansible_facts['distribution_major_version'] is version('7', '==') }}
             upgrade_leapp_debug: {get_param: UpgradeLeappDebug}
             upgrade_leapp_devel_skip: {get_param: UpgradeLeappDevelSkip}
+            upgrade_leapp_command_options: {get_attr: [RoleParametersValue, value, 'upgrade_leapp_command_options']}
             upgrade_leapp_command_options: {get_param: UpgradeLeappCommandOptions}
             upgrade_leapp_reboot_timeout: {get_param: UpgradeLeappRebootTimeout}
+            upgrade_leapp_post_reboot_delay: {get_param: UpgradeLeappPostRebootDelay}
           vars:
             _upgradeLeappEnabled: {get_param: UpgradeLeappEnabled}
           tags:
@@ -311,14 +340,14 @@ outputs:
                 state: absent
             - name: "add packages into Leapp's to_remove file"
               vars:
-                pkg_to_remove: { get_param: UpgradeLeappToRemove }
+                pkg_to_remove: { get_attr: [RoleParametersValue, value, 'upgrade_leapp_to_remove']}
               lineinfile:
                 path: "/etc/leapp/transaction/to_remove"
                 line: "{{ item }}"
               loop: "{{ pkg_to_remove }}"
             - name: "add packages into Leapp's to_install file"
               vars:
-                pkg_to_install: { get_param: UpgradeLeappToInstall }
+                pkg_to_install: {get_attr: [RoleParametersValue, value, 'upgrade_leapp_to_install']}
               lineinfile:
                 path: "/etc/leapp/transaction/to_install"
                 line: "{{ item }}"
@@ -375,21 +404,37 @@ outputs:
             - step|int == 4
             - upgrade_leapp_enabled
           block:
-            - name: Reset boot order if WA#1925078 fired
-              shell: |
-                NEXT_BOOT="$(efibootmgr | grep BootOrder | awk -F'[ ,]*' '{print $2}')"
-                efibootmgr -n $NEXT_BOOT
+            - name: Reset boot order if WA#1925078 fired and fix grubenv
               when:
                 - workaround_1925078_fired is defined
                 - workaround_1925078_fired|bool
+              block:
+                - name:
+                  shell: |
+                    NEXT_BOOT="$(efibootmgr -v | grep \\redhat | awk -F'[ t*]' '{print $2}')"
+                    efibootmgr -n $NEXT_BOOT
+                # WA: some versions of grub2 fail to look for grubenv in /boot/grub2/grubenv
+                # In this case we copy the file instead of creating simlink making sure if
+                # this is the case than grubenv is still available for previous bootrecord.
+                - name: Stat /boot/grub2/grubenv
+                  stat:
+                    path: /boot/grub2/grubenv
+                  register: grubenv
+                - name: Copy /boot/grub2/grubenv to /boot/efi/EFI/redhat/grubenv
+                  when: grubenv.stat.islnk is defined and grubenv.stat.islnk == False
+                  copy:
+                    src: /boot/grub2/grubenv
+                    dest: /boot/efi/EFI/redhat/grubenv
+                    remote_src: true
             - name: reboot to perform the upgrade
               reboot:
                 reboot_timeout: "{{upgrade_leapp_reboot_timeout}}"
-            - name: Clear gathered facts from all currently targeted hosts
-              meta: clear_facts
-            - name: Force facts refresh after OS upgrade to refresh cache.
-              setup:
+                test_command: >-
+                  systemctl is-system-running | grep -e running -e degraded
+                post_reboot_delay: "{{ upgrade_leapp_post_reboot_delay }}"
             - name: Set the python to python3
+              vars:
+                ansible_python_interpreter: "/usr/bin/python3"
               shell: alternatives --set python /usr/bin/python3
 
         - name: Package and repo update tasks
@@ -400,7 +445,7 @@ outputs:
                 list_join:
                   - ''
                   - - "#!/bin/bash\n\n"
-                    - {get_param: UpgradeInitCommand}
+                    - {get_attr: [RoleParametersValue, value, 'upgrade_init_command']}
             - name: Run UpgradeInitCommonCommand
               shell:
                 list_join:
@@ -409,17 +454,26 @@ outputs:
                     - {get_param: UpgradeInitCommonCommand}
             - name: Ensure DNF modules have the right stream
               vars:
-                dnf_module_list: {get_param: DnfStreams}
+                dnf_module_list: {get_attr: [RoleParametersValue, value, 'dnf_module_list']}
               dnf:
                 name: "@{{ item.module }}:{{ item.stream }}/{{ item.profile|default('common') }}"
                 state: present
               loop: "{{ dnf_module_list|list }}"
               when:
-                - ansible_distribution_major_version >= '8'
+                - ansible_facts['distribution_major_version'] is version('8', '>=')
                 - dnf_module_list|length > 0
             - name: Ensure EL modules are in proper state
               shell: dnf -y distro-sync
-              when: ansible_distribution_major_version == '8'
+              when: ansible_facts['distribution_major_version'] == '8'
+              retries: 5
+              delay: 10
+              register: _dnf_distro_sync
+              until: _dnf_distro_sync is success
+            - name: Clean up Python 2 packages
+              package:
+                name: python2-*
+                state: absent
+              when: ansible_facts['distribution_major_version'] == '8'
             - name: Ensure TripleO prerequisite packages are installed
               package:
                 name:
@@ -428,13 +482,11 @@ outputs:
                   - net-snmp
                   - openstack-selinux
                   - os-net-config
-                  - pacemaker
-                  - pcs
                   - puppet-tripleo
                   - python3-heat-agent*
                   - rsync
                 state: present
-              when: ansible_distribution_major_version == '8'
+              when: ansible_facts['distribution_major_version'] is version('8', '==')
         - name: Special treatment for OpenvSwitch
           tripleo_ovs_upgrade:
           when:
@@ -498,10 +550,6 @@ outputs:
               include_role:
                 name: tripleo-persist
                 tasks_from: cleanup.yml
-            - name: cleanup tripleo_transfer
-              include_role:
-                name: tripleo-transfer
-                tasks_from: cleanup.yml
       update_tasks:
         - name: Enforce RHOSP rules regarding subscription.
           include_role:
@@ -510,18 +558,18 @@ outputs:
             skip_rhel_enforcement: {get_param: SkipRhelEnforcement}
           when:
             - step|int == 0
-            - ansible_distribution == 'RedHat'
+            - ansible_facts['distribution'] == 'RedHat'
             - not (skip_rhel_enforcement | bool)
         - name: Ensure DNF modules have the right stream
           vars:
-            dnf_module_list: {get_param: DnfStreams}
+            dnf_module_list: {get_attr: [RoleParametersValue, value, 'dnf_module_list']}
           dnf:
             name: "@{{ item.module }}:{{ item.stream }}/{{ item.profile|default('common') }}"
             state: present
           loop: "{{ dnf_module_list|list }}"
           when:
             - step|int == 0
-            - ansible_distribution_major_version >= '8'
+            - ansible_facts['distribution_major_version'] is version('8', '>=')
             - dnf_module_list|length > 0
         - name: Check for existing yum.pid
           stat:  path=/var/run/yum.pid

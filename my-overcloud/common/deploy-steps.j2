@@ -389,6 +389,7 @@ outputs:
         keystone_resources: {get_param: KeystoneResourcesConfigs}
       common_deploy_steps_playbooks: {get_file: deploy-steps-playbooks-common.yaml}
       common_deploy_steps_tasks: {get_file: deploy-steps-tasks.yaml}
+      common_container_config_scripts: {get_file: common-container-config-scripts.yaml}
       hiera_steps_tasks: {get_file: hiera-steps-tasks.yaml}
       deploy_steps_tasks_step_0: {get_file: deploy-steps-tasks-step-0.yaml}
       common_deploy_steps_tasks_step_1: {get_file: deploy-steps-tasks-step-1.yaml}
@@ -593,7 +594,7 @@ outputs:
                       run_once: true
                       debug:
                         msg: Use --start-at-task '{{role.name}} Host prep steps' to resume from this task
-                    - import_tasks: {{role.name}}/host_prep_tasks.yaml
+                    - include_tasks: {{role.name}}/host_prep_tasks.yaml
 {%- endfor %}
               tags:
                 - overcloud
@@ -798,8 +799,10 @@ outputs:
                 docker_puppet_process_count: DOCKER_PUPPET_PROCESS_COUNT
                 docker_puppet_mount_host_puppet: DOCKER_PUPPET_MOUNT_HOST_PUPPET
                 tripleo_minor_update: true
+                tripleo_redhat_enforce: {{role.rhsm_enforce|default("true")}}
               tasks:
                 - import_tasks: hiera_steps_tasks.yaml
+                - import_tasks: common_container_config_scripts.yaml
                 - include_tasks: update_steps_tasks.yaml
                   with_sequence: start=0 end={{update_steps_max-1}}
                   loop_control:
@@ -1094,9 +1097,9 @@ outputs:
                   loop_control:
                     loop_var: step
                   tags: always
-                  # we use ansible_hostname to determine if the host is alive
+                  # we use ansible_facts['hostname'] to determine if the host is alive
                   # or not.
-                  when: ansible_hostname is defined
+                  when: ansible_facts['hostname'] is defined
                 # We don't want to run the scale tasks on dead nodes, to allow
                 # the operator to scale down the cloud no matter the state of
                 # the servers.
@@ -1107,9 +1110,9 @@ outputs:
                     msg: "Node is unreachable. No scale tasks will be run."
                   ignore_errors: True
                   tags: always
-                  # we use ansible_hostname to determine if the host is alive
+                  # we use ansible_facts['hostname'] to determine if the host is alive
                   # or not.
-                  when: ansible_hostname is not defined
+                  when: ansible_facts['hostname'] is not defined
               tags:
                 - scale
       post_update_steps_tasks: |

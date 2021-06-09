@@ -909,7 +909,7 @@ outputs:
                   map_merge:
                     - {get_param: NovaComputeOptEnvVars}
                     - KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
-                    - LIBGUESTFS_BACKEND: libvirt:qemu:///system
+                    - LIBGUESTFS_BACKEND: direct
             - if:
                 - is_not_additional_cell
                 - nova_wait_for_compute_service:
@@ -992,6 +992,13 @@ outputs:
 
                     [Install]
                     WantedBy=multi-user.target
+              - name: Making sure virt-guest-shutdown.target is present
+                copy:
+                  dest: /etc/systemd/system/virt-guest-shutdown.target
+                  content: |
+                    [Unit]
+                    Description=Libvirt guests shutdown
+                    Documentation=https://libvirt.org
               - name: libvirt-guests enable VM shutdown on compute reboot/shutdown
                 systemd:
                   name: libvirt-guests
@@ -1026,6 +1033,13 @@ outputs:
 
                     [Install]
                     WantedBy=multi-user.target
+              - name: Making sure virt-guest-shutdown.target is present
+                copy:
+                  dest: /etc/systemd/system/virt-guest-shutdown.target
+                  content: |
+                    [Unit]
+                    Description=Libvirt guests shutdown
+                    Documentation=https://libvirt.org
               - name: tripleo_nova_libvirt_guests enable VM shutdown on compute reboot/shutdown
                 systemd:
                   name: tripleo_nova_libvirt_guests
@@ -1060,7 +1074,7 @@ outputs:
               register: iha_nodes
             - name: If instance HA is enabled on the node activate the evacuation completed check
               file: path=/var/lib/nova/instanceha/enabled state=touch
-              when: iha_nodes.stdout|lower is search('"'+ansible_hostname|lower+'"')
+              when: iha_nodes.stdout|lower is search('"'+ansible_facts['hostname']|lower+'"')
           - name: Is irqbalance enabled
             set_fact:
               compute_irqbalance_disabled: {get_attr: [RoleParametersValue, value, compute_disable_irqbalance]}
@@ -1112,8 +1126,11 @@ outputs:
           - name: disable KSM on compute
             when: not compute_ksm_enabled|bool
             block:
-            - name: Populate service facts (ksm)
-              service_facts: # needed to make yaml happy
+            - name: Check for ksm
+              shell: systemctl is-active ksm.service || systemctl is-enabled ksm.service
+              become: true
+              failed_when: false
+              register: ksm_service_check
             - name: disable KSM services
               service:
                 name: "{{ item }}"
@@ -1122,7 +1139,9 @@ outputs:
               with_items:
                 - ksm.service
                 - ksmtuned.service
-              when: "'ksm.service' in ansible_facts.services"
+              when:
+                - ksm_service_check.rc is defined
+                - ksm_service_check.rc == 0
               register: ksmdisabled
             # When KSM is disabled, any memory pages that were shared prior to
             # deactivating KSM are still shared. To delete all of the PageKSM
@@ -1130,13 +1149,12 @@ outputs:
             - name: delete PageKSM after disable ksm on compute
               command: echo 2 >/sys/kernel/mm/ksm/run
               when:
-                - "'ksm.service' in ansible_facts.services"
+                - ksm_service_check.rc is defined
+                - ksm_service_check.rc == 0
                 - ksmdisabled is changed
           - name: enable KSM on compute
             when: compute_ksm_enabled|bool
             block:
-            - name: Populate service facts (ksm)
-              service_facts: # needed to make yaml happy
             # mschuppert: we can remove the CentOS/RHEL split here when CentOS8/
             # RHEL8 is available and we have the same package name providing the
             # KSM services
@@ -1145,21 +1163,21 @@ outputs:
                 name: qemu-kvm-common-ev
                 state: present
               when:
-                - ansible_distribution == 'CentOS'
-                - ansible_distribution_major_version == '7'
+                - ansible_facts['distribution'] == 'CentOS'
+                - ansible_facts['distribution_major_version'] is version('7', '==')
             - name: make sure package providing ksmtuned is installed (RHEL7)
               package:
                 name: qemu-kvm-common-rhev
                 state: present
               when:
-                - ansible_distribution == 'RedHat'
-                - ansible_distribution_major_version == '7'
+                - ansible_facts['distribution'] == 'RedHat'
+                - ansible_facts['distribution_major_version'] is version('7', '==')
             - name: make sure package providing ksmtuned is installed (RHEL8 or CentOS8)
               package:
                 name: qemu-kvm-common
                 state: present
               when:
-                - ansible_distribution_major_version == '8'
+                - ansible_facts['distribution_major_version'] is version('8', '==')
             - name: enable ksmtunded
               service:
                 name: "{{ item }}"
@@ -1170,20 +1188,34 @@ outputs:
                 - ksmtuned.service
       external_post_deploy_tasks: {get_attr: [NovaComputeCommon, nova_compute_common_deploy_steps_tasks]}
       upgrade_tasks:
+        # nova_hybrid_state
+        - name: Gather missing facts
+          setup:
+            gather_subset: "distribution"
+          when: >-
+            ansible_facts['distribution'] is not defined or
+            ansible_facts['distribution_major_version'] is not defined
+          tags:
+            - never
+            - nova_hybrid_state
         - name: Switch compute to hybrid state
           vars:
             nova_compute_image: {get_param: ContainerNovaComputeImage}
           tags:
             - never
             - nova_hybrid_state
-          when: step|int == 0
+          when:
+            - step|int == 0
+            - ansible_facts['distribution'] == 'RedHat'
+            - ansible_facts['distribution_major_version'] is version('7', '==')
           block:
-            - name: Check if we need to create nova_compute paunch config
-              stat:
-                path: /var/lib/tripleo-config/docker-container-hybrid_nova_compute.json
+            - name: Check if nova_compute is running with proper image
+              shell: |
+                docker ps | grep "{{nova_compute_image}}"
+              failed_when: false
               register: hybrid_nova_compute
             - name: Implement the hybrid state (only if the compute is still Queens)
-              when: not hybrid_nova_compute.stat.exists
+              when: hybrid_nova_compute.rc != 0
               block:
                 - name: Update the nova_compute paunch image in config
                   shell: |
@@ -1193,9 +1225,15 @@ outputs:
                     /var/lib/tripleo-config/docker-container-hybrid_nova_compute.json
                 # Nova compute will not work unless we ensure it will not connect against db and use messaging
                 - name: Remove database section from nova_compute config
-                  shell: crudini --del database /var/lib/config-data/puppet-generated/nova_libvirt/etc/nova/nova.conf
+                  ini_file:
+                    path: /var/lib/config-data/puppet-generated/nova_libvirt/etc/nova/nova.conf
+                    section: database
+                    state: absent
                 - name: Remove api_database section from nova_compute config
-                  shell: crudini --del api_database /var/lib/config-data/puppet-generated/nova_libvirt/etc/nova/nova.conf
+                  ini_file:
+                    path: /var/lib/config-data/puppet-generated/nova_libvirt/etc/nova/nova.conf
+                    section: api_database
+                    state: absent
                 # We have to update check-run-nova-compute as it's distributed via THT and not rpm or image so at this
                 # moment we have Queens code instead of Train which will not work due to switch from python2 to python3
                 - name: is Instance HA enabled
@@ -1230,9 +1268,16 @@ outputs:
                         - {get_param: DockerInsecureRegistryAddress}
                 - name: Set container_registry_insecure registries
                   when: container_registry_insecure_registries != []
-                  shell: crudini --set /etc/containers/registries.conf registries.insecure registries "[{{ container_registry_insecure_registries | map('regex_replace', '(.*)', "'\1'") | join(',') }}]"
+                  ini_file:
+                    path: /etc/containers/registries.conf
+                    section: registries.insecure
+                    option: registries
+                    value: "{{ container_registry_insecure_registries }}"
+                  register: ini_read_result
                 - name: Restart docker
-                  when: container_registry_insecure_registries != []
+                  when:
+                    - container_registry_insecure_registries != []
+                    - ini_read_result is changed
                   service:
                     name: docker
                     state: restarted
@@ -1289,13 +1334,13 @@ outputs:
                 is_additional_cell: {get_param: NovaAdditionalCell}
             - name: Set fact for nova_compute services
               set_fact:
-                nova_compute_service: "{{ nova_compute_service_result.stdout | from_yaml | selectattr('Host', 'match', ansible_fqdn ~ '.*') | list }}"
+                nova_compute_service: "{{ nova_compute_service_result.stdout | from_yaml | selectattr('Host', 'match', ansible_facts['fqdn'] ~ '.*') | list }}"
               delegate_to: localhost
               check_mode: no
             - name: Check search output
               fail:
                 msg: >-
-                  Found multiple `{{ ansible_fqdn }}`, which is unexpected.
+                  Found multiple `{{ ansible_facts['fqdn'] }}`, which is unexpected.
                   This means that the FQDN of the selected device to disable is
                   either wrong or is sharing a name with another host, which is
                   also wrong. Please correct this issue before continuing. Nova
