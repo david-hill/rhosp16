@@ -4,6 +4,10 @@ description: >
   OpenStack containerized Manila API service
 
 parameters:
+  ContainerManilaApiImageStein:
+    description: image
+    type: string
+    default: ''
   ContainerManilaApiImage:
     description: image
     type: string
@@ -36,6 +40,12 @@ parameters:
     default: {}
     description: Parameters specific to the role
     type: json
+  DeployIdentifier:
+    default: ''
+    type: string
+    description: >
+      Setting this to a unique value will re-run any deployment tasks which
+      perform configuration on a Heat stack-update.
   EnableInternalTLS:
     type: boolean
     default: false
@@ -57,6 +67,7 @@ parameters:
 
 conditions:
 
+  fast_forward_upgrade: {not: {equals: [{get_param: ContainerManilaApiImageStein},'']}}
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
   manila_workers_zero: {equals : [{get_param: ManilaWorkers}, 0]}
 
@@ -94,6 +105,27 @@ outputs:
     description: Role data for the Manila API role.
     value:
       service_name: manila_api
+      keystone_resources:
+        manila:
+          endpoints:
+            public: {get_param: [EndpointMap, ManilaV1Public, uri]}
+            internal: {get_param: [EndpointMap, ManilaV1Internal, uri]}
+            admin: {get_param: [EndpointMap, ManilaV1Admin, uri]}
+          users:
+            manila:
+              password: {get_param: ManilaPassword}
+          region: {get_param: KeystoneRegion}
+          service: 'share'
+        manilav2:
+          endpoints:
+            public: {get_param: [EndpointMap, ManilaPublic, uri]}
+            internal: {get_param: [EndpointMap, ManilaInternal, uri]}
+            admin: {get_param: [EndpointMap, ManilaAdmin, uri]}
+          users:
+            manilav2:
+              password: {get_param: ManilaPassword}
+          region: {get_param: KeystoneRegion}
+          service: 'sharev2'
       monitoring_subscription: {get_param: MonitoringSubscriptionManilaApi}
       config_settings:
         map_merge:
@@ -142,19 +174,7 @@ outputs:
               - manila_workers_zero
               - {}
               - manila::wsgi::apache::workers: {get_param: ManilaWorkers}
-      service_config_settings:
-        map_merge:
-          - get_attr: [ManilaBase, role_data, service_config_settings]
-          - keystone:
-              manila::keystone::auth::tenant: 'service'
-              manila::keystone::auth::public_url: {get_param: [EndpointMap, ManilaV1Public, uri]}
-              manila::keystone::auth::internal_url: {get_param: [EndpointMap, ManilaV1Internal, uri]}
-              manila::keystone::auth::admin_url: {get_param: [EndpointMap, ManilaV1Admin, uri]}
-              manila::keystone::auth::public_url_v2: {get_param: [EndpointMap, ManilaPublic, uri]}
-              manila::keystone::auth::internal_url_v2: {get_param: [EndpointMap, ManilaInternal, uri]}
-              manila::keystone::auth::admin_url_v2: {get_param: [EndpointMap, ManilaAdmin, uri]}
-              manila::keystone::auth::password: {get_param: ManilaPassword}
-              manila::keystone::auth::region: {get_param: KeystoneRegion}
+      service_config_settings: {get_attr: [ManilaBase, role_data, service_config_settings]}
       # BEGIN DOCKER SETTINGS #
       puppet_config:
         config_volume: manila
@@ -173,6 +193,13 @@ outputs:
               dest: "/etc/httpd/conf.d"
               merge: false
               preserve_properties: true
+            - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.modules.d"
+              dest: "/etc/httpd/conf.modules.d"
+              # TODO(emilien) remove optional flag once we get a promotion
+              # https://launchpad.net/bugs/1884115
+              optional: true
+              merge: false
+              preserve_properties: true
             - source: "/var/lib/kolla/config_files/src/*"
               dest: "/"
               merge: true
@@ -181,6 +208,12 @@ outputs:
             - path: /var/log/manila
               owner: manila:manila
               recurse: true
+      container_config_scripts:
+        map_merge:
+          - {get_attr: [ContainersCommon, container_config_scripts]}
+          - manila_ffu_db_sync.sh:
+              mode: "0755"
+              content: { get_file: ../../container_config_scripts/manila_ffu_db_sync.sh }
       docker_config:
         step_2:
           manila_init_logs:
@@ -192,20 +225,45 @@ outputs:
               - /var/log/containers/httpd/manila-api:/var/log/httpd:z
             command: ['/bin/bash', '-c', 'chown -R manila:manila /var/log/manila']
         step_3:
-          manila_api_db_sync:
-            user: root
-            image: *manila_api_image
-            net: host
-            detach: false
-            volumes:
-              list_concat:
-                - {get_attr: [ContainersCommon, volumes]}
-                -
-                  - /var/lib/config-data/manila/etc/my.cnf.d/tripleo.cnf:/etc/my.cnf.d/tripleo.cnf:ro
-                  - /var/lib/config-data/manila/etc/manila/:/etc/manila/:ro
-                  - /var/log/containers/manila:/var/log/manila:z
-                  - /var/log/containers/httpd/manila-api:/var/log/httpd:z
-            command: "/usr/bin/bootstrap_host_exec manila_api su manila -s /bin/bash -c '/usr/bin/manila-manage db sync'"
+          map_merge:
+            - manila_api_db_sync:
+                start_order: 1
+                user: root
+                image: *manila_api_image
+                net: host
+                detach: false
+                volumes: &manila_volumes
+                  list_concat:
+                    - {get_attr: [ContainersCommon, volumes]}
+                    -
+                      - /var/lib/config-data/manila/etc/my.cnf.d/tripleo.cnf:/etc/my.cnf.d/tripleo.cnf:ro
+                      - /var/lib/config-data/manila/etc/manila/:/etc/manila/:ro
+                      - /var/log/containers/manila:/var/log/manila:z
+                      - /var/log/containers/httpd/manila-api:/var/log/httpd:z
+                command: "/usr/bin/bootstrap_host_exec manila_api su manila -s /bin/bash -c '/usr/bin/manila-manage db sync'"
+                environment:
+                  TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+            - if:
+                - fast_forward_upgrade
+                - manila_api_db_sync_stein:
+                    start_order: 0
+                    image: &manila_api_image_stein {get_param: ContainerManilaApiImageStein}
+                    net: host
+                    privileged: false
+                    detach: false
+                    user: root
+                    volumes:
+                      list_concat:
+                        - *manila_volumes
+                        -
+                          - /var/lib/container-config-scripts/:/container-config-scripts/:ro
+                    command:
+                      - '/usr/bin/bootstrap_host_exec'
+                      - 'manila_api'
+                      - '/container-config-scripts/manila_ffu_db_sync.sh'
+                    environment:
+                      TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+                - {}
         step_4:
           manila_api:
             image: *manila_api_image
@@ -219,17 +277,17 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/manila_api.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/manila/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/manila:/var/lib/kolla/config_files/src:ro
                   - /var/log/containers/manila:/var/log/manila:z
                   - /var/log/containers/httpd/manila-api:/var/log/httpd:z
-                  - if:
-                      - internal_tls_enabled
-                      - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
-                      - ''
-                  - if:
-                      - internal_tls_enabled
-                      - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
-                      - ''
+                - if:
+                    - internal_tls_enabled
+                    - - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
+                    - []
+                - if:
+                    - internal_tls_enabled
+                    - - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
+                    - []
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
       metadata_settings:
@@ -240,47 +298,23 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
-            - { 'path': /var/log/containers/manila, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/containers/httpd/manila-api, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/manila, 'setype': svirt_sandbox_file_t }
-        - name: manila logs readme
-          copy:
-            dest: /var/log/manila/readme.txt
-            content: |
-              Log files from manila containers can be found under
-              /var/log/containers/manila and /var/log/containers/httpd/manila-api.
-          ignore_errors: true
+            - { 'path': /var/log/containers/manila, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
+            - { 'path': /var/log/containers/httpd/manila-api, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
       upgrade_tasks: []
-      fast_forward_upgrade_tasks:
-        - name: Check if manila_api is deployed
-          command: systemctl is-enabled --quiet openstack-manila-api
-          ignore_errors: True
-          register: manila_api_enabled_result
-          when:
-            - step|int == 0
-            - release == 'rocky'
-        - name: Set fact manila_api_enabled
-          set_fact:
-            manila_api_enabled: "{{ manila_api_enabled_result.rc == 0 }}"
-          when:
-            - step|int == 0
-            - release == 'rocky'
-        - name: Stop openstack-manila-api
-          service: name=openstack-manila-api state=stopped
-          when:
+      external_upgrade_tasks:
+        - when:
             - step|int == 1
-            - release == 'rocky'
-            - manila_api_enabled|bool
-        - name: manila package update
-          package:
-            name: 'openstack-manila*'
-            state: latest
-          when:
-            - step|int == 6
-            - is_bootstrap_node|bool
-        - name: Manila db sync
-          command: manila-manage db sync
-          when:
-            - step|int == 8
-            - is_bootstrap_node|bool
+          tags:
+            - never
+            - system_upgrade_transfer_data
+            - system_upgrade_stop_services
+          block:
+            - name: Stop manila api container
+              import_role:
+                name: tripleo-container-stop
+              vars:
+                tripleo_containers_to_stop:
+                  - manila_api
+                tripleo_delegate_to: "{{ groups['manila_api'] | default([]) }}"

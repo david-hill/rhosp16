@@ -172,13 +172,6 @@ outputs:
         rsyslog:
           tripleo_logging_sources_nova_metadata:
             - {get_param: NovaMetadataLoggingSource}
-        keystone:
-          nova::keystone::auth::tenant: 'service'
-          nova::keystone::auth::public_url: {get_param: [EndpointMap, NovaPublic, uri]}
-          nova::keystone::auth::internal_url: {get_param: [EndpointMap, NovaInternal, uri]}
-          nova::keystone::auth::admin_url: {get_param: [EndpointMap, NovaAdmin, uri]}
-          nova::keystone::auth::password: {get_param: NovaPassword}
-          nova::keystone::auth::region: {get_param: KeystoneRegion}
         mysql:
           map_merge:
             - {get_attr: [NovaBase, role_data, service_config_settings, mysql]}
@@ -207,6 +200,13 @@ outputs:
               dest: "/etc/httpd/conf.d"
               merge: false
               preserve_properties: true
+            - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.modules.d"
+              dest: "/etc/httpd/conf.modules.d"
+              # TODO(emilien) remove optional flag once we get a promotion
+              # https://launchpad.net/bugs/1884115
+              optional: true
+              merge: false
+              preserve_properties: true
             - source: "/var/lib/kolla/config_files/src/*"
               dest: "/"
               merge: true
@@ -233,22 +233,21 @@ outputs:
                 - {get_attr: [NovaMetadataLogging, volumes]}
                 -
                   - /var/lib/kolla/config_files/nova_metadata.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/nova_metadata/:/var/lib/kolla/config_files/src:ro
-                  -
-                    if:
-                      - internal_tls_enabled
-                      - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
-                      - ''
-                  -
-                    if:
-                      - internal_tls_enabled
-                      - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
-                      - ''
+                  - /var/lib/config-data/puppet-generated/nova_metadata:/var/lib/kolla/config_files/src:ro
+                - if:
+                    - internal_tls_enabled
+                    - - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
+                    - []
+                - if:
+                    - internal_tls_enabled
+                    - - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
+                    - []
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
       deploy_steps_tasks:
         - name: validate nova metadata container state
           when:
+            - not (ansible_check_mode | bool)
             - container_cli == 'podman'
             - not container_healthcheck_disabled
             - step|int == 5
@@ -264,12 +263,14 @@ outputs:
               delay: 30
               until: nova_metadata_healthcheck_state.status.ExecMainPID != '0' and
                 nova_metadata_healthcheck_state.status.ActiveState in ['inactive', 'failed']
-              ignore_errors: yes
+              failed_when: false
             - name: Fail if nova-metadata healthcheck report failed status
               fail:
                 msg: nova-metadata isn't working (healthcheck failed)
               when: nova_metadata_healthcheck_state.status.ExecMainStatus != '0'
       host_prep_tasks: {get_attr: [NovaMetadataLogging, host_prep_tasks]}
+      metadata_settings:
+        get_attr: [ApacheServiceBase, role_data, metadata_settings]
       external_upgrade_tasks:
         - when:
             - step|int == 1

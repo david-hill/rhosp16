@@ -114,6 +114,7 @@ outputs:
                   - 4369
                   - 5672
                   - 25672
+                  - 25673-25683
       service_config_settings: {get_attr: [RabbitmqBase, role_data, service_config_settings]}
       # BEGIN DOCKER SETTINGS
       puppet_config:
@@ -173,7 +174,7 @@ outputs:
             privileged: false
             volumes:
               - /var/lib/kolla/config_files/rabbitmq.json:/var/lib/kolla/config_files/config.json:ro
-              - /var/lib/config-data/puppet-generated/rabbitmq/:/var/lib/kolla/config_files/src:ro
+              - /var/lib/config-data/puppet-generated/rabbitmq:/var/lib/kolla/config_files/src:ro
               - /etc/hosts:/etc/hosts:ro
               - /etc/localtime:/etc/localtime:ro
               - /var/lib/rabbitmq:/var/lib/rabbitmq:z
@@ -191,23 +192,8 @@ outputs:
                       - {get_param: RabbitCookie}
                       - {get_param: [DefaultPasswords, rabbit_cookie]}
         step_2:
-          rabbitmq_restart_bundle:
-            start_order: 0
-            config_volume: rabbitmq
-            detach: false
-            net: host
-            ipc: host
-            user: root
-            environment:
-              TRIPLEO_MINOR_UPDATE: ''
-            command: /pacemaker_restart_bundle.sh rabbitmq-bundle oslo_messaging_notify
-            image: {get_param: ContainerRabbitmqImage}
-            volumes:
-              list_concat:
-                - {get_attr: [ContainersCommon, pacemaker_restart_volumes]}
-                - - /var/lib/config-data/puppet-generated/rabbitmq/:/var/lib/kolla/config_files/src:ro
           rabbitmq_init_bundle:
-            start_order: 1
+            start_order: 0
             detach: false
             net: host
             ipc: host
@@ -238,23 +224,31 @@ outputs:
               # NOTE: this should force this container to re-run on each
               # update (scale-out, etc.)
               TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+          rabbitmq_restart_bundle:
+            start_order: 5
+            config_volume: rabbitmq
+            detach: false
+            net: host
+            ipc: host
+            user: root
+            environment:
+              TRIPLEO_MINOR_UPDATE: ''
+            command: /pacemaker_restart_bundle.sh oslo_messaging_notify rabbitmq rabbitmq-bundle Started
+            image: {get_param: ContainerRabbitmqImage}
+            volumes:
+              list_concat:
+                - {get_attr: [ContainersCommon, pacemaker_restart_volumes]}
+                - - /var/lib/config-data/puppet-generated/rabbitmq:/var/lib/kolla/config_files/src:ro
       host_prep_tasks:
         - name: create persistent directories
           file:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
             - { 'path': /var/lib/rabbitmq, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/containers/rabbitmq, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/rabbitmq, 'setype': svirt_sandbox_file_t }
-        - name: rabbitmq logs readme
-          copy:
-            dest: /var/log/rabbitmq/readme.txt
-            content: |
-              Log files from rabbitmq containers can be found under
-              /var/log/containers/rabbitmq.
-          ignore_errors: true
+            - { 'path': /var/log/containers/rabbitmq, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
         - name: stop the Erlang port mapper on the host and make sure it cannot bind to the port used by container
           shell: |
             echo 'export ERL_EPMD_ADDRESS=127.0.0.1' > /etc/rabbitmq/rabbitmq-env.conf
@@ -330,7 +324,7 @@ outputs:
               set_fact:
                 rabbitmq_pcs_res: "{{rabbitmq_pcs_res_result.rc == 0}}"
             - name: set is_notify_rabbitmq_bootstrap_node fact
-              set_fact: is_notify_rabbitmq_bootstrap_node={{oslo_messaging_notify_short_bootstrap_node_name|lower == ansible_hostname|lower}}
+              set_fact: is_notify_rabbitmq_bootstrap_node={{oslo_messaging_notify_short_bootstrap_node_name|lower == ansible_facts['hostname']|lower}}
         - name: Update rabbitmq-bundle pcs resource bundle for new container image
           when:
             - step|int == 1
@@ -350,7 +344,7 @@ outputs:
               block:
                 - name: Check rabbitmq logging configuration in pacemaker
                   command: cibadmin --query --xpath "//storage-mapping[@id='rabbitmq-log']"
-                  ignore_errors: true
+                  failed_when: false
                   register: rabbitmq_logs_moved
                 - name: Add a bind mount for logging in the rabbitmq bundle
                   # rc == 6 means the configuration doesn't exist in the CIB
@@ -369,6 +363,7 @@ outputs:
         - name: Create hiera data to upgrade oslo messaging notify in a stepwise manner.
           when:
             - step|int == 1
+            - cluster_recreate|bool
           block:
             - name: set oslo_messaging_notify upgrade node facts in a single-node environment
               set_fact:
@@ -383,7 +378,7 @@ outputs:
                 cacheable: no
               when:
                 - groups['oslo_messaging_notify'] | length > 1
-                - item.split('.')[0] in ansible_limit.split(',')
+                - item.split('.')[0] in ansible_limit.split(':')
               loop: "{{ oslo_messaging_notify_node_names }}"
             - fail:
                 msg: >
@@ -433,33 +428,3 @@ outputs:
           when:
             - step|int == 3
           block: *rabbitmq_fetch_retag_container_tasks
-
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-            - is_bootstrap_node|bool
-          block:
-            - name: Check cluster resource status of rabbitmq
-              pacemaker_resource:
-                resource: {get_attr: [RabbitmqBase, role_data, service_name]}
-                state: show
-                check_mode: false
-              ignore_errors: true
-              register: rabbitmq_res_result
-            - name: Set fact rabbitmq_res
-              set_fact:
-                rabbitmq_res: "{{ rabbitmq_res_result.rc == 0 }}"
-        - name: Disable the rabbitmq cluster resource
-          pacemaker_resource:
-            resource:  {get_attr: [RabbitmqBase, role_data, service_name]}
-            state: disable
-            wait_for_resource: true
-          register: rabbitmq_output
-          retries: 5
-          until: rabbitmq_output.rc == 0
-          when:
-            - step|int == 2
-            - release == 'rocky'
-            - is_bootstrap_node|bool
-            - rabbitmq_res|bool

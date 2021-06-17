@@ -48,6 +48,9 @@ parameters:
   BarbicanPkcs11CryptoATOSEnabled:
     type: boolean
     default: false
+  BarbicanPkcs11CryptoLunasaEnabled:
+    type: boolean
+    default: false
   BarbicanPkcs11CryptoThalesEnabled:
     type: boolean
     default: false
@@ -59,7 +62,7 @@ parameters:
     type: string
     default: ''
   BarbicanPkcs11CryptoLogin:
-    description: Password to login to PKCS11 session
+    description: Password (PIN) to login to PKCS#11 session
     type: string
     hidden: true
     default: ''
@@ -72,9 +75,17 @@ parameters:
     type: string
     default: ''
   BarbicanPkcs11CryptoSlotId:
-    description: Slot Id for the HSM
+    description: Slot Id for the PKCS#11 token to be used
     type: string
     default: '0'
+  BarbicanPkcs11CryptoTokenSerialNumber:
+    description: Serial number for PKCS#11 token to be used
+    type: string
+    default: ''
+  BarbicanPkcs11CryptoTokenLabel:
+    description: Label for PKCS#11 token to be used
+    type: string
+    default: ''
   BarbicanPkcs11CryptoHMACKeyType:
     description: Cryptoki Key Type for Master HMAC key
     type: string
@@ -101,6 +112,17 @@ parameters:
     description: Hash of atos-hsm role variables used to
                  install ATOS client software.
     type: json
+  LunasaVars:
+    default: {}
+    description: Hash of lunasa-hsm role variables used to
+                 install Lunasa client software.
+    type: json
+  LunasaClientIPNetwork:
+    description: >
+      (Optional) When set Barbican nodes will be registered with
+      the HSMs using the IP from this network instead of the FQDN.
+    type: string
+    default: ''
   BarbicanPassword:
     description: The password for the barbican service account.
     type: string
@@ -144,16 +166,21 @@ parameters:
       perform configuration on a Heat stack-update.
 
 conditions:
-  service_debug_unset: {equals : [{get_param: BarbicanDebug}, '']}
+  service_debug_unset:  {equals : [{get_param: BarbicanDebug}, '']}
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
   thales_hsm_enabled:   {equals: [{get_param: BarbicanPkcs11CryptoThalesEnabled}, true]}
   atos_hsm_enabled:     {equals: [{get_param: BarbicanPkcs11CryptoATOSEnabled}, true]}
-  thales_or_atos_hsm_enabled:
+  lunasa_hsm_enabled:   {equals: [{get_param: BarbicanPkcs11CryptoLunasaEnabled}, true]}
+  hsm_enabled:
     or:
     - thales_hsm_enabled
     - atos_hsm_enabled
+    - lunasa_hsm_enabled
   pkcs11_plugin_enabled: {equals: [{get_param: BarbicanPkcs11CryptoEnabled}, true]}
   pkcs11_rewrap_pkeks: {equals: [{get_param: BarbicanPkcs11CryptoRewrapKeys}, true]}
+  # Luna Clients use FQDN by default.  When LunasaClientIPNetwork is set we
+  # will use the Controller's IP address from that network instead.
+  lunasa_hsm_use_fqdn: {equals: [{get_param: LunasaClientIPNetwork}, '']}
 
 resources:
 
@@ -181,6 +208,22 @@ outputs:
     description: Role data for the Barbican API role.
     value:
       service_name: barbican_api
+      keystone_resources:
+        barbican:
+          endpoints:
+            public: {get_param: [EndpointMap, BarbicanPublic, uri]}
+            internal: {get_param: [EndpointMap, BarbicanInternal, uri]}
+            admin: {get_param: [EndpointMap, BarbicanAdmin, uri]}
+          users:
+            barbican:
+              password: {get_param: BarbicanPassword}
+          region: {get_param: KeystoneRegion}
+          service: 'key-manager'
+          roles:
+            - key-manager:service-admin
+            - creator
+            - observer
+            - audit
       config_settings:
         map_merge:
           - get_attr: [ApacheServiceBase, role_data, config_settings]
@@ -244,12 +287,6 @@ outputs:
             - '%'
             - "%{hiera('mysql_bind_host')}"
         keystone:
-          barbican::keystone::auth::public_url: {get_param: [EndpointMap, BarbicanPublic, uri]}
-          barbican::keystone::auth::internal_url: {get_param: [EndpointMap, BarbicanInternal, uri]}
-          barbican::keystone::auth::admin_url: {get_param: [EndpointMap, BarbicanAdmin, uri]}
-          barbican::keystone::auth::password: {get_param: BarbicanPassword}
-          barbican::keystone::auth::region: {get_param: KeystoneRegion}
-          barbican::keystone::auth::tenant: 'service'
           tripleo::profile::base::keystone::barbican_notification_topics: ['barbican_notifications']
         nova_compute:
           nova::compute::keymgr_backend: >
@@ -288,6 +325,13 @@ outputs:
           config_files:
             - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.d"
               dest: "/etc/httpd/conf.d"
+              merge: false
+              preserve_properties: true
+            - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.modules.d"
+              dest: "/etc/httpd/conf.modules.d"
+              # TODO(emilien) remove optional flag once we get a promotion
+              # https://launchpad.net/bugs/1884115
+              optional: true
               merge: false
               preserve_properties: true
             - source: "/var/lib/kolla/config_files/src/*"
@@ -388,7 +432,7 @@ outputs:
         - null
       deploy_steps_tasks:
         if:
-        - thales_or_atos_hsm_enabled
+        - hsm_enabled
         - list_concat:
           -
             if:
@@ -422,6 +466,34 @@ outputs:
                       name: atos-hsm
                     vars:
                       {get_param: ATOSVars}
+              - null
+          -
+            if:
+              - lunasa_hsm_enabled
+              -
+                - name: Lunasa client install
+                  when: step|int == 2
+                  block:
+                  - name: install the lunasa client
+                    include_role:
+                      name: lunasa_hsm
+                    vars:
+                      if:
+                        - lunasa_hsm_use_fqdn
+                        - map_merge:
+                          - {get_param: LunasaVars}
+                          - lunasa_client_pin: {get_param: BarbicanPkcs11CryptoLogin}
+                          - lunasa_ha_label: {get_param: BarbicanPkcs11CryptoTokenLabel}
+                        - map_merge:
+                          - {get_param: LunasaVars}
+                          - lunasa_client_pin: {get_param: BarbicanPkcs11CryptoLogin}
+                          - lunasa_ha_label: {get_param: BarbicanPkcs11CryptoTokenLabel}
+                          - lunasa_client_ip:
+                              str_replace:
+                                template:
+                                  "{{$NETWORK_ip}}"
+                                params:
+                                  $NETWORK: {get_param: LunasaClientIPNetwork}
               - null
         - null
       docker_config:
@@ -471,6 +543,14 @@ outputs:
                             - /etc/proteccio:/etc/proteccio
                             - /usr/lib64/libnethsm.so:/usr/lib64/libnethsm.so
                           - null
+                      -
+                        if:
+                          - lunasa_hsm_enabled
+                          -
+                            - /etc/Chrystoki.conf:/etc/Chrystoki.conf
+                            - /usr/lib/libCryptoki2_64.so:/usr/lib/libCryptoki2_64.so
+                            - /usr/safenet/lunaclient:/usr/safenet/lunaclient
+                          - null
                   environment:
                     # NOTE: this should force this container to re-run on each
                     # update (scale-out, etc.)
@@ -480,23 +560,11 @@ outputs:
                       - ' '
                       - - "/usr/bin/bootstrap_host_exec barbican_api su barbican -s /bin/bash -c '/usr/bin/barbican-manage"
                         - {get_attr: [BarbicanApiLogging, cmd_extra_args]}
-                        - "hsm check_mkek --library-path"
-                        - {get_param: [BarbicanPkcs11CryptoLibraryPath]}
-                        - "--slot-id"
-                        - {get_param: [BarbicanPkcs11CryptoSlotId]}
-                        - "--passphrase"
-                        - {get_param: [BarbicanPkcs11CryptoLogin]}
-                        - "--label"
+                        - "hsm check_mkek --label"
                         - {get_param: [BarbicanPkcs11CryptoMKEKLabel]}
                         - "|| /usr/bin/barbican-manage"
                         - {get_attr: [BarbicanApiLogging, cmd_extra_args]}
-                        - "hsm gen_mkek --library-path"
-                        - {get_param: [BarbicanPkcs11CryptoLibraryPath]}
-                        - "--slot-id"
-                        - {get_param: [BarbicanPkcs11CryptoSlotId]}
-                        - "--passphrase"
-                        - {get_param: [BarbicanPkcs11CryptoLogin]}
-                        - "--label"
+                        - "hsm gen_mkek --label"
                         - {get_param: [BarbicanPkcs11CryptoMKEKLabel]}
                         - "'"
               - {}
@@ -518,28 +586,10 @@ outputs:
                       - ' '
                       - - "/usr/bin/bootstrap_host_exec barbican_api su barbican -s /bin/bash -c '/usr/bin/barbican-manage"
                         - {get_attr: [BarbicanApiLogging, cmd_extra_args]}
-                        - "hsm check_hmac --library-path"
-                        - {get_param: [BarbicanPkcs11CryptoLibraryPath]}
-                        - "--slot-id"
-                        - {get_param: [BarbicanPkcs11CryptoSlotId]}
-                        - "--passphrase"
-                        - {get_param: [BarbicanPkcs11CryptoLogin]}
-                        - "--label"
+                        - "hsm check_hmac --label"
                         - {get_param: [BarbicanPkcs11CryptoHMACLabel]}
-                        - "--key-type"
-                        - {get_param: [BarbicanPkcs11CryptoHMACKeyType]}
-                        - "|| /usr/bin/barbican-manage hsm gen_hmac --library-path"
-                        - {get_param: [BarbicanPkcs11CryptoLibraryPath]}
-                        - "--slot-id"
-                        - {get_param: [BarbicanPkcs11CryptoSlotId]}
-                        - "--passphrase"
-                        - {get_param: [BarbicanPkcs11CryptoLogin]}
-                        - "--label"
+                        - "|| /usr/bin/barbican-manage hsm gen_hmac --label"
                         - {get_param: [BarbicanPkcs11CryptoHMACLabel]}
-                        - "--key-type"
-                        - {get_param: [BarbicanPkcs11CryptoHMACKeyType]}
-                        - "--mechanism"
-                        - {get_param: [BarbicanPkcs11CryptoHMACKeygenMechanism]}
                         - "'"
               - {}
             - if:
@@ -639,7 +689,7 @@ outputs:
                     - {get_attr: [BarbicanApiLogging, volumes]}
                     -
                       - /var/lib/kolla/config_files/barbican_api.json:/var/lib/kolla/config_files/config.json:ro
-                      - /var/lib/config-data/puppet-generated/barbican/:/var/lib/kolla/config_files/src:ro
+                      - /var/lib/config-data/puppet-generated/barbican:/var/lib/kolla/config_files/src:ro
                     -
                       if:
                         - internal_tls_enabled
@@ -661,6 +711,14 @@ outputs:
                           - /etc/proteccio:/etc/proteccio
                           - /usr/lib64/libnethsm.so:/usr/lib64/libnethsm.so
                         - null
+                    -
+                      if:
+                        - lunasa_hsm_enabled
+                        -
+                          - /etc/Chrystoki.conf:/etc/Chrystoki.conf
+                          - /usr/lib/libCryptoki2_64.so:/usr/lib/libCryptoki2_64.so
+                          - /usr/safenet/lunaclient:/usr/safenet/lunaclient
+                        - null
                 environment: &kolla_env
                   KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
             - barbican_keystone_listener:
@@ -677,7 +735,7 @@ outputs:
                     - {get_attr: [BarbicanApiLogging, volumes]}
                     -
                       - /var/lib/kolla/config_files/barbican_keystone_listener.json:/var/lib/kolla/config_files/config.json:ro
-                      - /var/lib/config-data/puppet-generated/barbican/:/var/lib/kolla/config_files/src:ro
+                      - /var/lib/config-data/puppet-generated/barbican:/var/lib/kolla/config_files/src:ro
                 environment: *kolla_env
             - barbican_worker:
                 start_order: 7
@@ -693,7 +751,7 @@ outputs:
                     - {get_attr: [BarbicanApiLogging, volumes]}
                     -
                       - /var/lib/kolla/config_files/barbican_worker.json:/var/lib/kolla/config_files/config.json:ro
-                      - /var/lib/config-data/puppet-generated/barbican/:/var/lib/kolla/config_files/src:ro
+                      - /var/lib/config-data/puppet-generated/barbican:/var/lib/kolla/config_files/src:ro
                     -
                       if:
                         - thales_hsm_enabled
@@ -708,6 +766,14 @@ outputs:
                           - /etc/proteccio:/etc/proteccio
                           - /usr/lib64/libnethsm.so:/usr/lib64/libnethsm.so
                         - null
+                    -
+                      if:
+                        - lunasa_hsm_enabled
+                        -
+                          - /etc/Chrystoki.conf:/etc/Chrystoki.conf
+                          - /usr/lib/libCryptoki2_64.so:/usr/lib/libCryptoki2_64.so
+                          - /usr/safenet/lunaclient:/usr/safenet/lunaclient
+                        - null
                 environment: *kolla_env
       host_prep_tasks:
         list_concat:
@@ -717,5 +783,39 @@ outputs:
                 name: virt_sandbox_use_netlink
                 persistent: yes
                 state: yes
+      scale_tasks:
+        if:
+        - lunasa_hsm_enabled
+        -
+          - name: Remove HSM clients
+            when: step|int == 1
+            tags: down
+            block:
+              - name: Remove client from HSM
+                import_role:
+                  name: lunasa_hsm
+                  tasks_from: unregister_client
+                delegate_to: undercloud
+                vars:
+                  - map_merge:
+                    - {get_param: LunasaVars}
+                    - lunasa_client_pin: {get_param: BarbicanPkcs11CryptoLogin}
+                    - client_name: "{{ fqdn_canonical }}"
+        - null
       metadata_settings:
         get_attr: [ApacheServiceBase, role_data, metadata_settings]
+      external_upgrade_tasks:
+        - when:
+            - step|int == 1
+          tags:
+            - never
+            - system_upgrade_transfer_data
+            - system_upgrade_stop_services
+          block:
+            - name: Stop barbican api container
+              import_role:
+                name: tripleo-container-stop
+              vars:
+                tripleo_containers_to_stop:
+                  - barbican_api
+                tripleo_delegate_to: "{{ groups['barbican_api'] | default([]) }}"

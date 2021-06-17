@@ -4,6 +4,10 @@ description: >
   OpenStack containerized Mistral API service
 
 parameters:
+  ContainerMistralApiImageStein:
+    description: image
+    type: string
+    default: ''
   ContainerMistralApiImage:
     description: image
     type: string
@@ -66,8 +70,17 @@ parameters:
     default: ''
     description: Indicate whether this resource may be shared with the domain received in the request
                  "origin" header.
+  MistralPassword:
+    description: The password for the Mistral service and db account, used by the Mistral services.
+    type: string
+    hidden: true
+  KeystoneRegion:
+    type: string
+    default: 'regionOne'
+    description: Keystone region for endpoint
 
 conditions:
+  fast_forward_upgrade: {not: {equals: [{get_param: ContainerMistralApiImageStein},'']}}
   mistral_workers_zero: {equals : [{get_param: MistralWorkers}, 0]}
   cors_allowed_origin_unset: {equals : [{get_param: MistralCorsAllowedOrigin}, '']}
 
@@ -94,6 +107,17 @@ outputs:
     description: Role data for the Mistral API role.
     value:
       service_name: mistral_api
+      keystone_resources:
+        mistral:
+          endpoints:
+            public: {get_param: [EndpointMap, MistralPublic, uri]}
+            internal: {get_param: [EndpointMap, MistralInternal, uri]}
+            admin: {get_param: [EndpointMap, MistralAdmin, uri]}
+          users:
+            mistral:
+              password: {get_param: MistralPassword}
+          region: {get_param: KeystoneRegion}
+          service: 'workflowv2'
       config_settings:
         map_merge:
           - get_attr: [MistralBase, role_data, config_settings]
@@ -160,6 +184,12 @@ outputs:
             - path: /var/log/mistral
               owner: mistral:mistral
               recurse: true
+      container_config_scripts:
+        map_merge:
+          - {get_attr: [ContainersCommon, container_config_scripts]}
+          - mistral_ffu_db_sync.sh:
+              mode: "0755"
+              content: { get_file: ../../container_config_scripts/mistral_ffu_db_sync.sh }
       docker_config:
         # db sync runs before permissions set by kolla_config
         step_2:
@@ -172,22 +202,44 @@ outputs:
               - /var/log/containers/mistral:/var/log/mistral:z
             command: ['/bin/bash', '-c', 'chown -R mistral:mistral /var/log/mistral']
         step_3:
-          mistral_db_sync:
-            start_order: 0
-            image: *mistral_api_image
-            net: host
-            privileged: false
-            detach: false
-            user: root
-            volumes:
-              list_concat:
-                - {get_attr: [ContainersCommon, volumes]}
-                -
-                  - /var/lib/config-data/mistral/etc/mistral/:/etc/mistral/:ro
-                  - /var/log/containers/mistral:/var/log/mistral:z
-            command: "/usr/bin/bootstrap_host_exec mistral_api su mistral -s /bin/bash -c 'mistral-db-manage --config-file /etc/mistral/mistral.conf upgrade head'"
-            environment:
-              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+          map_merge:
+            - mistral_db_sync:
+                start_order: 1
+                image: *mistral_api_image
+                net: host
+                privileged: false
+                detach: false
+                user: root
+                volumes: &mistral_api_volumes
+                  list_concat:
+                    - {get_attr: [ContainersCommon, volumes]}
+                    -
+                      - /var/lib/config-data/mistral/etc/mistral/:/etc/mistral/:ro
+                      - /var/log/containers/mistral:/var/log/mistral:z
+                command: "/usr/bin/bootstrap_host_exec mistral_api su mistral -s /bin/bash -c 'mistral-db-manage --config-file /etc/mistral/mistral.conf upgrade head'"
+                environment:
+                  TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+            - if:
+                - fast_forward_upgrade
+                - mistral_db_sync_stein:
+                    start_order: 0
+                    image: {get_param: ContainerMistralApiImageStein}
+                    net: host
+                    privileged: false
+                    detach: false
+                    user: root
+                    volumes:
+                      list_concat:
+                        - *mistral_api_volumes
+                        -
+                          - /var/lib/container-config-scripts/:/container-config-scripts/:ro
+                    command:
+                      - '/usr/bin/bootstrap_host_exec'
+                      - 'mistral_api'
+                      - '/container-config-scripts/mistral_ffu_db_sync.sh'
+                    environment:
+                      TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+                - {}
         step_4:
           mistral_api:
             start_order: 15
@@ -202,7 +254,7 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/mistral_api.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/mistral/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/mistral:/var/lib/kolla/config_files/src:ro
                   - /var/log/containers/mistral:/var/log/mistral:z
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
@@ -222,20 +274,22 @@ outputs:
                   - /var/log/containers/mistral:/var/log/mistral:z
             # NOTE: dprince this requires that we install openstack-tripleo-common into
             # the Mistral API image so that we get tripleo* actions
-            command: "/usr/bin/bootstrap_host_exec mistral_api su mistral -s /bin/bash -c 'mistral-db-manage --config-file /etc/mistral/mistral.conf populate'"
+            command: "/usr/bin/bootstrap_host_exec mistral_api su mistral -s /bin/bash -c 'mistral-db-manage --config-file /etc/mistral/mistral.conf --openstack_actions_mapping_path=/etc/mistral/mapping.json populate'"
       host_prep_tasks:
         - name: create persistent directories
           file:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
-            - { 'path': /var/log/containers/mistral, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/mistral, 'setype': svirt_sandbox_file_t }
-        - name: mistral logs readme
+            - { 'path': /var/log/containers/mistral, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
+      deploy_steps_tasks:
+        - name: Copy in action mapping file
+          when: step|int == 3
           copy:
-            dest: /var/log/mistral/readme.txt
-            content: |
-              Log files from mistral containers can be found under
-              /var/log/containers/mistral.
-          ignore_errors: true
+            content: {get_file: ./mapping.json}
+            dest: '/var/lib/config-data/mistral/etc/mistral/mapping.json'
+            setype: container_file_t
+            force: yes
+            mode: '0755'

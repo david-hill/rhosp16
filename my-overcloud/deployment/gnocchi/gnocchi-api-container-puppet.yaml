@@ -82,6 +82,21 @@ parameters:
     type: string
     constraints:
     - allowed_values: ['swift', 'file', 'rbd', 's3']
+  GnocchiNfsEnabled:
+    default: false
+    description: >
+      When using GnocchiBackend 'file', mount NFS share for data storage
+    type: boolean
+  GnocchiNfsShare:
+    default: ''
+    description: >
+      NFS share to mount for data storage (when GnocchiNfsEnabled is true)
+    type: string
+  GnocchiNfsOptions:
+    default: '_netdev,bg,intr,context=system_u:object_r:svirt_sandbox_file_t:s0'
+    description: >
+      Nfs mount options for data storage (when GnocchiNfsEnabled is true)
+    type: string
   GnocchiIncomingStorageDriver:
     default: redis
     description: Storage driver to use for incoming metric data
@@ -111,6 +126,7 @@ parameters:
 conditions:
   cors_allowed_origin_unset: {equals : [{get_param: GnocchiCorsAllowedOrigin}, '']}
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
+  nfs_backend_enabled: {equals: [{get_param: GnocchiNfsEnabled}, true]}
 
 resources:
 
@@ -143,6 +159,17 @@ outputs:
     description: Role data for the gnocchi API role.
     value:
       service_name: gnocchi_api
+      keystone_resources:
+        gnocchi:
+          endpoints:
+            public: {get_param: [EndpointMap, GnocchiPublic, uri]}
+            internal: {get_param: [EndpointMap, GnocchiInternal, uri]}
+            admin: {get_param: [EndpointMap, GnocchiAdmin, uri]}
+          users:
+            gnocchi:
+              password: {get_param: GnocchiPassword}
+          region: {get_param: KeystoneRegion}
+          service: 'metric'
       monitoring_subscription: {get_param: MonitoringSubscriptionGnocchiApi}
       config_settings:
         map_merge:
@@ -203,13 +230,6 @@ outputs:
           - rsyslog:
               tripleo_logging_sources_gnocchi_api:
                 - {get_param: GnocchiApiLoggingSource}
-            keystone:
-              gnocchi::keystone::auth::admin_url: { get_param: [ EndpointMap, GnocchiAdmin, uri ] }
-              gnocchi::keystone::auth::internal_url: {get_param: [EndpointMap, GnocchiInternal, uri]}
-              gnocchi::keystone::auth::password: {get_param: GnocchiPassword}
-              gnocchi::keystone::auth::public_url: { get_param: [ EndpointMap, GnocchiPublic, uri ] }
-              gnocchi::keystone::auth::region: {get_param: KeystoneRegion}
-              gnocchi::keystone::auth::tenant: 'service'
             mysql:
               gnocchi::db::mysql::password: {get_param: GnocchiPassword}
               gnocchi::db::mysql::user: gnocchi
@@ -231,6 +251,13 @@ outputs:
           config_files: &gnocchi_api_kolla_config_files
             - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.d"
               dest: "/etc/httpd/conf.d"
+              merge: false
+              preserve_properties: true
+            - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.modules.d"
+              dest: "/etc/httpd/conf.modules.d"
+              # TODO(emilien) remove optional flag once we get a promotion
+              # https://launchpad.net/bugs/1884115
+              optional: true
               merge: false
               preserve_properties: true
             - source: "/var/lib/kolla/config_files/src/*"
@@ -287,13 +314,20 @@ outputs:
             volumes:
               - str_replace:
                   template: GNOCCHI_FILE_BASE_PATH:GNOCCHI_FILE_BASE_PATH:SE_FLAGS
-                  params: {GNOCCHI_FILE_BASE_PATH: {get_param: GnocchiFileBasePath}, SE_FLAGS: 'shared,z'}
+                  params:
+                    GNOCCHI_FILE_BASE_PATH: {get_param: GnocchiFileBasePath}
+                    SE_FLAGS:
+                      if:
+                        - nfs_backend_enabled
+                        - 'shared'
+                        - 'shared,z'
             command:
               - '/bin/bash'
               - '-c'
               - str_replace:
                   template: 'chown -R gnocchi:gnocchi GNOCCHI_FILE_BASE_PATH'
-                  params: {GNOCCHI_FILE_BASE_PATH: {get_param: GnocchiFileBasePath}}
+                  params:
+                    GNOCCHI_FILE_BASE_PATH: {get_param: GnocchiFileBasePath}
         step_5:
           gnocchi_db_sync:
             start_order: 0
@@ -307,10 +341,16 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/gnocchi_db_sync.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/gnocchi/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/gnocchi:/var/lib/kolla/config_files/src:ro
                   - str_replace:
                       template: GNOCCHI_FILE_BASE_PATH:GNOCCHI_FILE_BASE_PATH:SE_FLAGS
-                      params: {GNOCCHI_FILE_BASE_PATH: {get_param: GnocchiFileBasePath}, SE_FLAGS: 'shared,z'}
+                      params:
+                        GNOCCHI_FILE_BASE_PATH: {get_param: GnocchiFileBasePath}
+                        SE_FLAGS:
+                          if:
+                            - nfs_backend_enabled
+                            - 'shared'
+                            - 'shared,z'
                   - /var/log/containers/gnocchi:/var/log/gnocchi:z
                   - /var/log/containers/httpd/gnocchi-api:/var/log/httpd:z
                   - /etc/ceph:/var/lib/kolla/config_files/src-ceph:ro
@@ -331,42 +371,56 @@ outputs:
                 -
                   - str_replace:
                       template: GNOCCHI_FILE_BASE_PATH:GNOCCHI_FILE_BASE_PATH:SE_FLAGS
-                      params: {GNOCCHI_FILE_BASE_PATH: {get_param: GnocchiFileBasePath}, SE_FLAGS: 'shared,z'}
+                      params:
+                        GNOCCHI_FILE_BASE_PATH: {get_param: GnocchiFileBasePath}
+                        SE_FLAGS:
+                          if:
+                            - nfs_backend_enabled
+                            - 'shared'
+                            - 'shared,z'
                   - /var/lib/kolla/config_files/gnocchi_api.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/gnocchi/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/gnocchi:/var/lib/kolla/config_files/src:ro
                   - /var/log/containers/gnocchi:/var/log/gnocchi:z
                   - /var/log/containers/httpd/gnocchi-api:/var/log/httpd:z
                   - /etc/ceph:/var/lib/kolla/config_files/src-ceph:ro
-                  -
-                    if:
-                      - internal_tls_enabled
-                      - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
-                      - ''
-                  -
-                    if:
-                      - internal_tls_enabled
-                      - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
-                      - ''
+                - if:
+                    - internal_tls_enabled
+                    - - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
+                    - []
+                - if:
+                    - internal_tls_enabled
+                    - - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
+                    - []
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
       host_prep_tasks:
-        - name: create persistent data and logs directory
+        - name: create logs directory
           file:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
-            - { 'path': /var/log/containers/gnocchi, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/containers/httpd/gnocchi-api, 'setype': svirt_sandbox_file_t }
-            - { 'path': {get_param: GnocchiFileBasePath}, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/gnocchi, 'setype': svirt_sandbox_file_t }
-        - name: gnocchi logs readme
-          copy:
-            dest: /var/log/gnocchi/readme.txt
-            content: |
-              Log files from gnocchi containers can be found under
-              /var/log/containers/gnocchi and /var/log/containers/httpd/gnocchi-api.
-          ignore_errors: true
+            - { 'path': /var/log/containers/gnocchi, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
+            - { 'path': /var/log/containers/httpd/gnocchi-api, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
+        - name: Mount Gnocchi NFS on host
+          vars:
+            nfs_backend_enabled: {get_param: GnocchiNfsEnabled}
+            nfs_share: {get_param: GnocchiNfsShare}
+            nfs_options: {get_param: GnocchiNfsOptions}
+            file_base_path: {get_param: GnocchiFileBasePath}
+          mount:
+            name: "{{file_base_path}}"
+            state: mounted
+            src: "{{nfs_share}}"
+            fstype: nfs
+            opts: "{{nfs_options}}"
+          when: nfs_backend_enabled
+        - name: ensure GnocchiFileBasePath exists
+          file:
+            path: {get_param: GnocchiFileBasePath}
+            state: directory
+            setype: svirt_sandbox_file_t
         - name: ensure ceph configurations exist
           file:
             path: /etc/ceph
@@ -389,66 +443,3 @@ outputs:
                 tripleo_containers_to_stop:
                   - gnocchi_api
                 tripleo_delegate_to: "{{ groups['gnocchi_api'] | default([]) }}"
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-          block:
-            - name: Check if httpd service is running
-              command: systemctl is-active --quiet httpd
-              tags: common
-              ignore_errors: True
-              register: httpd_running_result
-              when:
-                - httpd_running is undefined
-            - name: Set fact httpd_running if unset
-              set_fact:
-                httpd_running: "{{ httpd_running_result.rc == 0 }}"
-              when:
-                - httpd_running is undefined
-            - name: Check if gnocchi_api is deployed
-              command: systemctl is-enabled --quiet openstack-gnocchi-api
-              tags: common
-              ignore_errors: True
-              register: gnocchi_api_enabled_result
-            - name: Set fact gnocchi_api_enabled
-              set_fact:
-                gnocchi_api_enabled: "{{ gnocchi_api_enabled_result.rc == 0 }}"
-            - name: Check for gnocchi_api running under apache
-              tags: common
-              shell: "httpd -t -D DUMP_VHOSTS | grep -q gnocchi"
-              ignore_errors: True
-              register: gnocchi_httpd_enabled_result
-            - name: Set fact gnocchi_httpd_enabled
-              set_fact:
-                gnocchi_httpd_enabled: "{{ gnocchi_httpd_enabled_result.rc == 0 }}"
-        - name: Stop and disable gnocchi_api service
-          service: name=openstack-gnocchi-api state=stopped enabled=no
-          when:
-            - step|int == 1
-            - release == 'rocky'
-            - gnocchi_api_enabled|bool
-        - name: Stop and disable httpd service
-          when:
-            - step|int == 1
-            - release == 'rocky'
-            - gnocchi_httpd_enabled|bool
-            - httpd_running|bool
-          service: name=httpd state=stopped enabled=no
-        - name: Update gnocchi packages
-          package:
-            name:
-              - openstack-gnocchi*
-              - numpy
-            state: latest
-          # (pradk): We have to explicitly update numpy as its obsoleted
-          # by python2-numpy.
-          when:
-            - step|int == 6
-            - is_bootstrap_node|bool
-        - name: Sync gnocchi DB
-          command: gnocchi-upgrade --skip-storage
-          when:
-            - step|int == 8
-            - is_bootstrap_node|bool
-            - gnocchi_api_enabled|bool

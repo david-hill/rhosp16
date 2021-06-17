@@ -104,6 +104,14 @@ parameters:
     type: string
     description: Specifies the default CRL PEM file to use for revocation if
                  TLS is used for services in the internal network.
+  InternalTLSCRLPEMDir:
+    default: '/etc/pki/CA/crl/'
+    type: string
+    description: The directory of the CRL PEM file to be mounted.
+  ZaqarWsTimeout:
+    default: '14400'
+    type: string
+    description: The tunnel timeout in seconds for the Zaqar API.
 
 conditions:
   puppet_debug_enabled: {get_param: ConfigDebug}
@@ -177,6 +185,7 @@ outputs:
             tripleo::haproxy::redis_password: {get_param: RedisPassword}
             tripleo::haproxy::crl_file: {get_param: InternalTLSCRLPEMFile}
             tripleo::haproxy::haproxy_stats: {get_param: HAProxyStatsEnabled}
+            tripleo::haproxy::zaqar_ws_timeout_tunnel: {get_param: ZaqarWsTimeout}
             enable_load_balancer: {get_param: EnableLoadBalancer}
             tripleo::profile::base::haproxy::certificates_specs:
               map_merge:
@@ -217,6 +226,11 @@ outputs:
                   - ':'
                   - - {get_param: InternalTLSCAFile}
                     - {get_param: InternalTLSCAFile}
+                    - 'ro,shared'
+              - list_join:
+                  - ':'
+                  - - {get_param: InternalTLSCRLPEMDir}
+                    - {get_param: InternalTLSCRLPEMDir}
                     - 'ro,shared'
             - null
       kolla_config:
@@ -260,7 +274,7 @@ outputs:
                   - {get_attr: [HAProxyLogging, volumes]}
                   -
                     - /var/lib/kolla/config_files/haproxy.json:/var/lib/kolla/config_files/config.json:ro
-                    - /var/lib/config-data/puppet-generated/haproxy/:/var/lib/kolla/config_files/src:ro
+                    - /var/lib/config-data/puppet-generated/haproxy:/var/lib/kolla/config_files/src:ro
                     - /var/lib/haproxy:/var/lib/haproxy:rw,z
                   - if:
                     - public_tls_enabled
@@ -279,8 +293,8 @@ outputs:
                       - /etc/pki/tls/private/haproxy:/var/lib/kolla/config_files/src-tls/etc/pki/tls/private/haproxy:ro,shared
                       - list_join:
                           - ':'
-                          - - {get_param: InternalTLSCAFile}
-                            - {get_param: InternalTLSCAFile}
+                          - - {get_param: InternalTLSCRLPEMDir}
+                            - {get_param: InternalTLSCRLPEMDir}
                             - 'ro'
                     - null
               environment:
@@ -363,17 +377,10 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
-            - { 'path': /var/log/containers/haproxy, 'setype': var_log_t }
+            - { 'path': /var/log/containers/haproxy, 'setype': var_log_t, 'mode': '0750' }
             - { 'path': /var/lib/haproxy, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/haproxy, 'setype': svirt_sandbox_file_t }
-        - name: haproxy logs readme
-          copy:
-            dest: /var/log/haproxy/readme.txt
-            content: |
-              Log files from the haproxy containers can be found under
-              /var/log/containers/haproxy.
-          ignore_errors: true
       metadata_settings:
         list_concat:
           - {get_attr: [HAProxyPublicTLS, role_data, metadata_settings]}

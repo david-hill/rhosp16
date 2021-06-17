@@ -22,6 +22,7 @@ parameter_defaults:
     BarbicanAdmin: {protocol: http, port: '9311', host: IP_ADDRESS}
     BarbicanInternal: {protocol: http, port: '9311', host: IP_ADDRESS}
     BarbicanPublic: {protocol: http, port: '9311', host: IP_ADDRESS}
+    CephDashboardInternal: {protocol: http, port: '8444', host: IP_ADDRESS}
     CephGrafanaInternal: {protocol: http, port: '3100', host: IP_ADDRESS}
     CephRgwAdmin: {protocol: http, port: '8080', host: IP_ADDRESS}
     CephRgwInternal: {protocol: http, port: '8080', host: IP_ADDRESS}
@@ -78,6 +79,9 @@ parameter_defaults:
     NovaAdmin: {protocol: http, port: '8774', host: IP_ADDRESS}
     NovaInternal: {protocol: http, port: '8774', host: IP_ADDRESS}
     NovaPublic: {protocol: http, port: '8774', host: IP_ADDRESS}
+    NovajoinAdmin: {protocol: http, port: '9090', host: IP_ADDRESS}
+    NovajoinInternal: {protocol: http, port: '9090', host: IP_ADDRESS}
+    NovajoinPublic: {protocol: http, port: '9090', host: IP_ADDRESS}
     NovaMetadataInternal: {protocol: http, port: '8775', host: IP_ADDRESS}
     NovaUIConfig: {protocol: http, port: '3000', host: IP_ADDRESS}
     PlacementAdmin: {protocol: http, port: '8778', host: IP_ADDRESS}
@@ -106,3 +110,4 @@ parameter_defaults:
     ZaqarWebSocketInternal: {protocol: ws, port: '9000', host: IP_ADDRESS}
     ZaqarWebSocketPublic: {protocol: ws, port: '9000', host: IP_ADDRESS}
     ZaqarWebSocketUIConfig: {protocol: ws, port: '3000', host: IP_ADDRESS}
+

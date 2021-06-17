@@ -133,6 +133,16 @@ resources:
             expression: list(coalesce($.data.role_data, []).where($ != null).select($.get('global_config_settings')).where($ != null))
             data: {role_data: {get_attr: [ServiceChain, role_data]}}
 
+  KeystoneResourcesConfigs:
+    type: OS::Heat::Value
+    properties:
+      type: json
+      value:
+        map_merge:
+          yaql:
+            expression: list(coalesce($.data.role_data, []).where($ != null).select($.get('keystone_resources')).where($ != null))
+            data: {role_data: {get_attr: [ServiceChain, role_data]}}
+
   ServiceConfigSettings:
     type: OS::Heat::Value
     properties:
@@ -200,24 +210,6 @@ resources:
         yaql:
           # Note we use distinct() here to filter any identical tasks, e.g yum update for all services
           expression: coalesce($.data, []).where($ != null).select($.get('external_upgrade_tasks')).where($ != null).flatten().distinct()
-          data: {get_attr: [ServiceChain, role_data]}
-
-  FastForwardUpgradeTasks:
-    type: OS::Heat::Value
-    properties:
-      type: comma_delimited_list
-      value:
-        yaql:
-          expression: coalesce($.data, []).where($ != null).select($.get('fast_forward_upgrade_tasks')).where($ != null).flatten().distinct()
-          data: {get_attr: [ServiceChain, role_data]}
-
-  FastForwardPostUpgradeTasks:
-    type: OS::Heat::Value
-    properties:
-      type: comma_delimited_list
-      value:
-        yaql:
-          expression: coalesce($.data, []).where($ != null).select($.get('fast_forward_post_upgrade_tasks')).where($ != null).flatten().distinct()
           data: {get_attr: [ServiceChain, role_data]}
 
   PreUpgradeRollingTasks:
@@ -361,8 +353,6 @@ outputs:
       external_update_tasks: {get_attr: [ExternalUpdateTasks, value]}
       external_upgrade_tasks: {get_attr: [ExternalUpgradeTasks, value]}
       scale_tasks: {get_attr: [ScaleTasks, value]}
-      fast_forward_upgrade_tasks: {get_attr: [FastForwardUpgradeTasks, value]}
-      fast_forward_post_upgrade_tasks: {get_attr: [FastForwardPostUpgradeTasks, value]}
       pre_upgrade_rolling_tasks: {get_attr: [PreUpgradeRollingTasks, value]}
       upgrade_tasks: {get_attr: [UpgradeTasks, value]}
       post_upgrade_tasks: {get_attr: [PostUpgradeTasks, value]}
@@ -371,6 +361,7 @@ outputs:
       upgrade_batch_tasks: {get_attr: [UpgradeBatchTasks, value]}
       service_metadata_settings: {get_attr: [ServiceServerMetadataHook, metadata]}
       ansible_group_vars: {get_attr: [AnsibleGroupVars, value]}
+      keystone_resources: {get_attr: [KeystoneResourcesConfigs, value]}
 
       # Keys to support docker/services
       puppet_config: {get_attr: [PuppetConfig, value]}

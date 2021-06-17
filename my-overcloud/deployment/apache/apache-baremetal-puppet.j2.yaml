@@ -47,10 +47,21 @@ parameters:
     type: string
     description: Specifies the default CA cert to use if TLS is used for
                  services in the internal network.
+  CertificateKeySize:
+    type: string
+    default: '2048'
+    description: Specifies the private key size used when creating the
+                 certificate.
+  ApacheCertificateKeySize:
+    type: string
+    default: ''
+    description: Override the private key size used when creating the
+                 certificate for this service
 
 conditions:
 
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
+  key_size_override_unset: {equals: [{get_param: ApacheCertificateKeySize}, '']}
 
 resources:
 
@@ -58,12 +69,12 @@ resources:
     type: OS::Heat::Value
     properties:
       value:
-        # NOTE(jaosorior) Get unique network names to create
-        # certificates for those. We skip the tenant network since
-        # we don't need a certificate for that.
+        # NOTE(xek) Get unique network names to create certificates.
+        # We skip the tenant and management network (vip != false)
+        # since we don't generate certificates for those.
         - ctlplane
 {%- for network in networks if network.enabled|default(true) %}
-  {%- if network.name_lower != 'tenant' %}
+  {%- if network.vip | default(false) %}
         - {{network.name_lower}}
   {%- endif %}
 {%- endfor %}
@@ -116,6 +127,11 @@ outputs:
                         hostname: "%{hiera('fqdn_NETWORK')}"
                         principal: "HTTP/%{hiera('fqdn_NETWORK')}"
                         postsave_cmd: "pkill -USR1 httpd"
+                        key_size:
+                          if:
+                            - key_size_override_unset
+                            - {get_param: CertificateKeySize}
+                            - {get_param: ApacheCertificateKeySize}
                     for_each:
                       NETWORK: {get_attr: [ApacheNetworks, value]}
             - {}

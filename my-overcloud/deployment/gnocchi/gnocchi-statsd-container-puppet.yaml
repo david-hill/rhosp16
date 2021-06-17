@@ -53,9 +53,17 @@ parameters:
     description: Path to use when file driver is used. This could be NFS or a
       flat file.
     type: string
+  GnocchiNfsEnabled:
+    default: false
+    description: >
+      When using GnocchiBackend 'file', mount NFS share for data storage
+    type: boolean
   MonitoringSubscriptionGnocchiStatsd:
     default: 'overcloud-gnocchi-statsd'
     type: string
+
+conditions:
+  nfs_backend_enabled: {equals: [{get_param: GnocchiNfsEnabled}, true]}
 
 resources:
 
@@ -138,12 +146,18 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/gnocchi_statsd.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/gnocchi/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/gnocchi:/var/lib/kolla/config_files/src:ro
                   - /var/log/containers/gnocchi:/var/log/gnocchi:z
                   - /etc/ceph:/var/lib/kolla/config_files/src-ceph:ro
                   - str_replace:
                       template: GNOCCHI_FILE_BASE_PATH:GNOCCHI_FILE_BASE_PATH:SE_FLAGS
-                      params: {GNOCCHI_FILE_BASE_PATH: {get_param: GnocchiFileBasePath}, SE_FLAGS: 'shared,z'}
+                      params:
+                        GNOCCHI_FILE_BASE_PATH: {get_param: GnocchiFileBasePath}
+                        SE_FLAGS:
+                          if:
+                            - nfs_backend_enabled
+                            - 'shared'
+                            - 'shared,z'
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
       host_prep_tasks:
@@ -152,16 +166,9 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode }}"
           with_items:
-            - { 'path': /var/log/containers/gnocchi, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/gnocchi, 'setype': svirt_sandbox_file_t }
-        - name: gnocchi logs readme
-          copy:
-            dest: /var/log/gnocchi/readme.txt
-            content: |
-              Log files from gnocchi containers can be found under
-              /var/log/containers/gnocchi and /var/log/containers/httpd/gnocchi-api.
-          ignore_errors: true
+            - { 'path': /var/log/containers/gnocchi, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
         - name: create persistent data directory
           file:
             path: {get_param: GnocchiFileBasePath}
@@ -187,23 +194,3 @@ outputs:
                 tripleo_containers_to_stop:
                   - gnocchi_statsd
                 tripleo_delegate_to: "{{ groups['gnocchi_statsd'] | default([]) }}"
-      fast_forward_upgrade_tasks:
-        - name: FFU check if openstack-gnocchi-statsd is deployed
-          command: systemctl is-enabled --quiet openstack-gnocchi-statsd
-          ignore_errors: True
-          register: gnocchi_statsd_enabled_result
-          when:
-            - step|int == 0
-            - release == 'rocky'
-        - name: Set fact gnocchi_statsd_enabled
-          set_fact:
-            gnocchi_statsd_enabled: "{{ gnocchi_statsd_enabled_result.rc == 0 }}"
-          when:
-            - step|int == 0
-            - release == 'rocky'
-        - name: FFU stop and disable openstack-gnocchi-statsd service
-          service: name=openstack-gnocchi-statsd state=stopped enabled=no
-          when:
-            - step|int == 2
-            - release == 'rocky'
-            - gnocchi_statsd_enabled|bool

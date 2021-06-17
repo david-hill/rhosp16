@@ -4,6 +4,10 @@ description: >
   OpenStack containerized Nova Conductor service
 
 parameters:
+  ContainerNovaConductorImageStein:
+    description: image
+    type: string
+    default: ''
   ContainerNovaConductorImage:
     description: image
     type: string
@@ -66,6 +70,7 @@ parameters:
       - role_specific
 
 conditions:
+  fast_forward_upgrade: {not: {equals: [{get_param: ContainerNovaConductorImageStein},'']}}
   nova_workers_zero: {equals : [{get_param: NovaWorkers}, 0]}
 
 resources:
@@ -160,26 +165,54 @@ outputs:
             - path: /var/log/nova
               owner: nova:nova
               recurse: true
+      container_config_scripts:
+        map_merge:
+          - {get_attr: [ContainersCommon, container_config_scripts]}
+          - nova_ffu_db_sync.sh:
+              mode: "0755"
+              content: { get_file: ../../container_config_scripts/nova_ffu_db_sync.sh }
       docker_config:
         step_2:
           get_attr: [NovaLogging, docker_config, step_2]
         step_3:
-          nova_db_sync:
-            image: &nova_conductor_image {get_param: ContainerNovaConductorImage}
-            start_order: 3 # Runs after nova-api tasks if installed on this host
-            net: host
-            detach: false
-            volumes: &nova_conductor_bootstrap_volumes
-              list_concat:
-                - {get_attr: [ContainersCommon, volumes]}
-                - {get_attr: [NovaLogging, volumes]}
-                -
-                  - /var/lib/config-data/nova/etc/my.cnf.d/tripleo.cnf:/etc/my.cnf.d/tripleo.cnf:ro
-                  - /var/lib/config-data/nova/etc/nova/:/etc/nova/:ro
-            user: root
-            command: "/usr/bin/bootstrap_host_exec nova_conductor su nova -s /bin/bash -c '/usr/bin/nova-manage db sync'"
-            environment:
-              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+          map_merge:
+            - nova_db_sync:
+                image: &nova_conductor_image {get_param: ContainerNovaConductorImage}
+                start_order: 6 # Runs after nova-api tasks if installed on this host
+                net: host
+                detach: false
+                volumes: &nova_conductor_bootstrap_volumes
+                  list_concat:
+                    - {get_attr: [ContainersCommon, volumes]}
+                    - {get_attr: [NovaLogging, volumes]}
+                    -
+                      - /var/lib/config-data/nova/etc/my.cnf.d/tripleo.cnf:/etc/my.cnf.d/tripleo.cnf:ro
+                      - /var/lib/config-data/nova/etc/nova/:/etc/nova/:ro
+                user: root
+                command: "/usr/bin/bootstrap_host_exec nova_conductor su nova -s /bin/bash -c '/usr/bin/nova-manage db sync'"
+                environment:
+                  TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+            - if:
+                - fast_forward_upgrade
+                - nova_db_sync_stein:
+                    image: {get_param: ContainerNovaConductorImageStein}
+                    start_order: 1 # Runs after nova-api db sync Stein
+                    net: host
+                    detach: false
+                    volumes:
+                      list_concat:
+                        - *nova_conductor_bootstrap_volumes
+                        -
+                          - /var/lib/container-config-scripts/:/container-config-scripts/:ro
+                    user: root
+                    command:
+                      - '/usr/bin/bootstrap_host_exec'
+                      - 'nova_conductor'
+                      - '/container-config-scripts/nova_ffu_db_sync.sh'
+                      - 'db'
+                    environment:
+                      TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+                - {}
         step_4:
           nova_conductor:
             image: *nova_conductor_image
@@ -193,12 +226,13 @@ outputs:
                 - {get_attr: [NovaLogging, volumes]}
                 -
                   - /var/lib/kolla/config_files/nova_conductor.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/nova/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/nova:/var/lib/kolla/config_files/src:ro
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
       deploy_steps_tasks:
         - name: validate nova conductor container state
           when:
+            - not (ansible_check_mode | bool)
             - container_cli == 'podman'
             - not container_healthcheck_disabled
             - step|int == 5
@@ -214,7 +248,7 @@ outputs:
               delay: 30
               until: nova_conductor_healthcheck_state.status.ExecMainPID != '0' and
                 nova_conductor_healthcheck_state.status.ActiveState in ['inactive', 'failed']
-              ignore_errors: yes
+              failed_when: false
             - name: Fail if nova-conductor healthcheck report failed status
               fail:
                 msg: nova-conductor isn't working (healthcheck failed)
@@ -228,6 +262,15 @@ outputs:
                 persistent: yes
                 state: yes
       external_upgrade_tasks:
+        - when: step|int == 1
+          block: &nova_online_db_migration
+            - name: Online data migration for Nova
+              command: "{{ container_cli }} exec nova_conductor nova-manage db online_data_migrations"
+              delegate_to: "{{ groups['nova_conductor'][0] }}"
+              become: true
+              tags:
+                - online_upgrade
+                - online_upgrade_nova
         - when:
             - step|int == 1
           tags:
@@ -242,21 +285,6 @@ outputs:
                 tripleo_containers_to_stop:
                   - nova_conductor
                 tripleo_delegate_to: "{{ groups['nova_conductor'] | default([]) }}"
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-          block:
-            - name: Check if nova_conductor is deployed
-              command: systemctl is-enabled --quiet openstack-nova-conductor
-              ignore_errors: True
-              register: nova_conductor_enabled_result
-            - name: Set fact nova_conductor_enabled
-              set_fact:
-                nova_conductor_enabled: "{{ nova_conductor_enabled_result.rc == 0 }}"
-        - name: Stop and disable nova_conductor service
-          service: name=openstack-nova-conductor state=stopped
-          when:
-            - step|int == 1
-            - release == 'rocky'
-            - nova_conductor_enabled|bool
+      external_update_tasks:
+        - when: step|int == 1
+          block: *nova_online_db_migration

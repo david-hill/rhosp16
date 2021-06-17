@@ -167,7 +167,7 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/mistral_executor.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/mistral/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/mistral:/var/lib/kolla/config_files/src:ro
                   - /run:/run
                   - /var/log/containers/mistral:/var/log/mistral:z
                   - /var/lib/mistral:/var/lib/mistral:z
@@ -218,10 +218,10 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
-            - { 'path': /var/log/containers/mistral, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/lib/mistral, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/mistral, 'setype': svirt_sandbox_file_t }
+            - { 'path': /var/log/containers/mistral, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
+            - { 'path': /var/lib/mistral, 'setype': svirt_sandbox_file_t, 'mode': '0751' }
         - name: create mistral/.ssh directory
           file:
             path: /var/lib/mistral/.ssh
@@ -241,13 +241,6 @@ outputs:
             mode: 0444
             setype: svirt_sandbox_file_t
             local_follow: true
-        - name: mistral logs readme
-          copy:
-            dest: /var/log/mistral/readme.txt
-            content: |
-              Log files from mistral containers can be found under
-              /var/log/containers/mistral.
-          ignore_errors: true
         - name: create ceph-ansible source directory
           file:
             path: /usr/share/ceph-ansible

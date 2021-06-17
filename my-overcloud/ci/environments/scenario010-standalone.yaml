@@ -38,8 +38,6 @@ parameter_defaults:
     AB4114B1-9C9D-409A-BEFB-D88C151BF2C3: {"foo": "bar"}
     8CF1A7EA-7B4B-4433-AC83-17675514B1B8: {"foo2": "bar2"}
   Debug: true
-  # fetch dir needed for standalone
-  LocalCephAnsibleFetchDirectoryBackup: /var/lib/ceph_ansible_fetch
   CephAnsibleDisksConfig:
     osd_objectstore: bluestore
     osd_scenario: lvm
@@ -63,15 +61,14 @@ parameter_defaults:
   # a production deployment. What is here is suitable for
   # developer and CI testing only.
   CephClusterFSID: '4b5c8c0a-ff60-454b-a1b4-9747aa737d19'
-  CephMonKey: 'AQC+Ox1VmEr3BxAALZejqeHj50Nj6wJDvs96OQ=='
-  CephAdminKey: 'AQDLOh1VgEp6FRAAFzT7Zw+Y9V6JJExQAsRnRQ=='
   CephClientKey: 'AQC+vYNXgDAgAhAAc8UoYt+OTz5uhV7ItLdwUw=='
   CephAnsiblePlaybookVerbosity: 1
   CephAnsibleEnvironmentVariables:
-    ANSIBLE_SSH_RETRIES: '4'
-    DEFAULT_FORKS: '3'
+    ANSIBLE_SSH_RETRIES: 4
+    DEFAULT_FORKS: 3
   NovaEnableRbdBackend: true
   CinderEnableRbdBackend: true
+  CephAnsibleRepo: "rhceph-4-tools-for-rhel-8-x86_64-rpms"
   CinderBackupBackend: ceph
   GlanceBackend: rbd
   CinderEnableIscsiBackend: false

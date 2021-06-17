@@ -4,3 +4,9 @@
 resource_registry:
   OS::TripleO::Tasks::*PreConfig: OS::Heat::None
   OS::TripleO::Tasks::*PostConfig: OS::Heat::None
+
+parameter_defaults:
+  CephAnsiblePlaybook: default
+  DnfStreams: [{'module':'container-tools', 'stream':'2.0'},{'module':'virt', 'stream':'8.2'}]
+  CephStorageParameters:
+    DnfStreams: [{'module':'container-tools', 'stream':'2.0'}]

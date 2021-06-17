@@ -39,10 +39,21 @@ parameters:
   EnableInternalTLS:
     type: boolean
     default: false
+  CertificateKeySize:
+    type: string
+    default: '2048'
+    description: Specifies the private key size used when creating the
+                 certificate.
+  RedisCertificateKeySize:
+    type: string
+    default: ''
+    description: Override the private key size used when creating the
+                 certificate for this service
 
 conditions:
 
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
+  key_size_override_unset: {equals: [{get_param: RedisCertificateKeySize}, '']}
 
 resources:
 
@@ -113,6 +124,11 @@ outputs:
                     params:
                       NETWORK: {get_param: [ServiceNetMap, RedisNetwork]}
                 postsave_cmd: "/usr/bin/certmonger-redis-refresh.sh"
+                key_size:
+                  if:
+                    - key_size_override_unset
+                    - {get_param: CertificateKeySize}
+                    - {get_param: RedisCertificateKeySize}
             - {}
       service_config_settings: {get_attr: [RedisBase, role_data, service_config_settings]}
       # BEGIN DOCKER SETTINGS
@@ -167,15 +183,11 @@ outputs:
                 net: host
                 privileged: false
                 restart: always
-                systemd_exec_flags:
-                  RuntimeDirectory: redis
-                  ExecStartPre: /bin/chcon -t svirt_sandbox_file_t /var/run/redis
                 healthcheck:
                   test: /openstack/healthcheck
                 volumes:
-                  - /run:/run
                   - /var/lib/kolla/config_files/redis.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/redis/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/redis:/var/lib/kolla/config_files/src:ro
                   - /etc/localtime:/etc/localtime:ro
                   - /var/log/containers/redis:/var/log/redis:z
                   - /var/run/redis:/var/run/redis:z
@@ -196,7 +208,7 @@ outputs:
                         - {get_attr: [ContainersCommon, volumes]}
                         -
                           - /var/lib/kolla/config_files/redis_tls_proxy.json:/var/lib/kolla/config_files/config.json:ro
-                          - /var/lib/config-data/puppet-generated/redis/:/var/lib/kolla/config_files/src:ro
+                          - /var/lib/config-data/puppet-generated/redis:/var/lib/kolla/config_files/src:ro
                           - /etc/pki/tls/certs/redis.crt:/etc/pki/tls/certs/redis.crt:ro
                           - /etc/pki/tls/private/redis.key:/etc/pki/tls/private/redis.key:ro
                     environment:
@@ -218,22 +230,16 @@ outputs:
           file:
             path: "{{ item.path }}"
             state: directory
+            setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
-            - { 'path': /var/log/containers/redis, 'setype': svirt_sandbox_file_t }
+            - { 'path': /var/log/containers/redis, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/run/redis, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/redis, 'setype': svirt_sandbox_file_t }
         - name: ensure /var/run/redis is present upon reboot
           copy:
             dest: /etc/tmpfiles.d/var-run-redis.conf
             content: |
               d /var/run/redis 0755 root root - -
-        - name: redis logs readme
-          copy:
-            dest: /var/log/redis/readme.txt
-            content: |
-              Log files from redis containers can be found under
-              /var/log/containers/redis.
-          ignore_errors: true
       update_tasks:
         - name: Ensure redis is uninstalled on container host
           when: step|int == 1

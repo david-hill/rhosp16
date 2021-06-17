@@ -44,7 +44,7 @@ parameters:
     description: Set to True to enable debugging on all services.
     type: boolean
   HorizonDebug:
-    default: false
+    default: ''
     description: Set to True to enable debugging Horizon service.
     type: string
     constraints:
@@ -98,6 +98,11 @@ parameters:
     default: ''
     description: Horizon has a global overrides mechanism available to perform customizations
     type: string
+  HorizonHelpURL:
+    default: 'https://access.redhat.com/documentation/en-us/red_hat_openstack_platform'
+    description: On top of dashboard there is a Help button. This button could be used
+                 to re-direct user to vendor documentation or dedicated help portal.
+    type: string
   TimeZone:
     default: 'UTC'
     description: The timezone to be set on the overcloud.
@@ -126,9 +131,21 @@ parameters:
                  must match the resources defined in keystone.
 
 conditions:
-  debug_unset: {equals : [{get_param: Debug}, '']}
+  service_debug_unset: {equals : [{get_param: HorizonDebug}, '']}
   websso_enabled: {equals : [{get_param: WebSSOEnable}, True]}
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
+  horizon_logger_debug:
+    or:
+      - and:
+          - service_debug_unset
+          - get_param: Debug
+      - and:
+          - not: service_debug_unset
+          - yaql:
+              expression: $.data.horizon_debug.matches("true|True|TRUE")
+              data:
+                horizon_debug:
+                  get_param: HorizonDebug
 
 resources:
 
@@ -185,7 +202,6 @@ outputs:
           horizon::customization_module: {get_param: HorizonCustomizationModule}
           horizon::timezone: {get_param: TimeZone}
           horizon::file_upload_temp_dir: '/var/tmp'
-          horizon::help_url: 'https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux_OpenStack_Platform/16/index.html'
         -
           if:
           - websso_enabled
@@ -201,12 +217,15 @@ outputs:
           - {}
         -
           if:
-          - debug_unset
-          - horizon::django_debug: { get_param: HorizonDebug }
+          - service_debug_unset
           - horizon::django_debug: { get_param: Debug }
-      service_config_settings:
-        keystone:
-          keystone_enable_member: true
+          - horizon::django_debug: { get_param: HorizonDebug }
+        - if:
+          - horizon_logger_debug
+          - horizon::log_level: 'DEBUG'
+          - {}
+      ansible_group_vars:
+        keystone_enable_member: true
       # BEGIN DOCKER SETTINGS
       puppet_config:
         config_volume: horizon
@@ -220,6 +239,13 @@ outputs:
           config_files:
             - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.d"
               dest: "/etc/httpd/conf.d"
+              merge: false
+              preserve_properties: true
+            - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.modules.d"
+              dest: "/etc/httpd/conf.modules.d"
+              # TODO(emilien) remove optional flag once we get a promotion
+              # https://launchpad.net/bugs/1884115
+              optional: true
               merge: false
               preserve_properties: true
             - source: "/var/lib/kolla/config_files/src/*"
@@ -273,21 +299,19 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/horizon.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/horizon/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/horizon:/var/lib/kolla/config_files/src:ro
                   - /var/log/containers/horizon:/var/log/horizon:z
                   - /var/log/containers/httpd/horizon:/var/log/httpd:z
-                  - /var/tmp/:/var/tmp/:z
+                  - /var/tmp/horizon:/var/tmp/:z
                   - /var/www/:/var/www/:ro
-                  -
-                    if:
-                      - internal_tls_enabled
-                      - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
-                      - ''
-                  -
-                    if:
-                      - internal_tls_enabled
-                      - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
-                      - ''
+                - if:
+                    - internal_tls_enabled
+                    - - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
+                    - []
+                - if:
+                    - internal_tls_enabled
+                    - - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
+                    - []
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
               # Installed plugins:
@@ -321,19 +345,31 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
-            - { 'path': /var/log/containers/horizon, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/containers/httpd/horizon, 'setype': svirt_sandbox_file_t }
+            - { 'path': /var/log/containers/horizon, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
+            - { 'path': /var/log/containers/httpd/horizon, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/www, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/horizon, 'setype': svirt_sandbox_file_t }
-        - name: horizon logs readme
+            - { 'path': /var/tmp/horizon, 'setype': svirt_sandbox_file_t, 'mode': '1777' }
+        - name: ensure /var/tmp/horizon exists on boot
           copy:
-            dest: /var/log/horizon/readme.txt
+            dest: /etc/tmpfiles.d/var-tmp-horizon.conf
             content: |
-              Log files from horizon containers can be found under
-              /var/log/containers/horizon and /var/log/containers/httpd/horizon.
-          ignore_errors: true
-      upgrade_tasks: []
+              d /var/tmp/horizon 1777 root root - -
+      upgrade_tasks:
+        - name: Anchor for upgrade and update tasks
+          when: step|int == 0
+          block: &tmp_reset_label
+            - name: Reset selinux label on /var/tmp
+              file:
+                path: /var/tmp
+                state: directory
+                setype: tmp_t
+                mode: 1777
+      update_tasks:
+        - name: Anchor for upgrade and update tasks
+          when: step|int == 0
+          block: *tmp_reset_label
       external_upgrade_tasks:
         - when:
             - step|int == 1

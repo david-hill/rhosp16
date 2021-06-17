@@ -151,6 +151,10 @@ outputs:
               dest: "/etc/iscsi/"
               merge: true
               preserve_properties: true
+          # NOTE(abishop): no need to copy any src-tls/* files or set ownership
+          # of etcd's TLS certificate and key. The etcd service is only used by
+          # cinder-volume when it's running active/active, and *not* when it's
+          # under pcmk control.
           permissions:
             - path: /var/log/cinder
               owner: cinder:cinder
@@ -168,23 +172,8 @@ outputs:
               - /var/log/containers/cinder:/var/log/cinder
             command: ['/bin/bash', '-c', 'chown -R cinder:cinder /var/log/cinder']
         step_5:
-          cinder_volume_restart_bundle:
-            start_order: 0
-            config_volume: cinder
-            detach: false
-            net: host
-            ipc: host
-            user: root
-            environment:
-              TRIPLEO_MINOR_UPDATE: ''
-            command: /pacemaker_restart_bundle.sh openstack-cinder-volume cinder_volume
-            image: {get_param: ContainerCinderVolumeImage}
-            volumes:
-              list_concat:
-                - {get_attr: [ContainersCommon, pacemaker_restart_volumes]}
-                - - /var/lib/config-data/puppet-generated/cinder/:/var/lib/kolla/config_files/src:ro
           cinder_volume_init_bundle:
-            start_order: 1
+            start_order: 0
             detach: false
             net: host
             ipc: host
@@ -211,6 +200,21 @@ outputs:
               # NOTE: this should force this container to re-run on each
               # update (scale-out, etc.)
               TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+          cinder_volume_restart_bundle:
+            start_order: 2
+            config_volume: cinder
+            detach: false
+            net: host
+            ipc: host
+            user: root
+            environment:
+              TRIPLEO_MINOR_UPDATE: ''
+            command: /pacemaker_restart_bundle.sh cinder_volume openstack-cinder-volume openstack-cinder-volume _ Started
+            image: {get_param: ContainerCinderVolumeImage}
+            volumes:
+              list_concat:
+                - {get_attr: [ContainersCommon, pacemaker_restart_volumes]}
+                - - /var/lib/config-data/puppet-generated/cinder:/var/lib/kolla/config_files/src:ro
       host_prep_tasks: {get_attr: [CinderCommon, cinder_volume_host_prep_tasks]}
       deploy_steps_tasks:
         - name: Cinder Volume tag container image for pacemaker
@@ -285,7 +289,7 @@ outputs:
                 cinder_volume_pcs_res: "{{cinder_volume_pcs_res_result.rc == 0}}"
             - name: set is_cinder_volume_bootstrap_node fact
               tags: common
-              set_fact: is_cinder_volume_bootstrap_node={{cinder_volume_short_bootstrap_node_name|lower == ansible_hostname|lower}}
+              set_fact: is_cinder_volume_bootstrap_node={{cinder_volume_short_bootstrap_node_name|lower == ansible_facts['hostname']|lower}}
         - name: Update cinder_volume pcs resource bundle for new container image
           when:
             - step|int == 1
@@ -314,6 +318,7 @@ outputs:
         - name: Create hiera data to upgrade cinder_volume in a stepwise manner.
           when:
             - step|int == 1
+            - cluster_recreate|bool
           block:
             - name: set cinder_volume upgrade node facts in a single-node environment
               set_fact:
@@ -328,7 +333,7 @@ outputs:
                 cacheable: no
               when:
                 - groups['cinder_volume'] | length > 1
-                - item.split('.')[0] in ansible_limit.split(',')
+                - item.split('.')[0] in ansible_limit.split(':')
               loop: "{{ cinder_volume_node_names }}"
             - fail:
                 msg: >
@@ -385,33 +390,3 @@ outputs:
           pacemaker_resource:
             resource: openstack-cinder-volume
             state: enable
-
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-            - is_bootstrap_node|bool
-          block:
-            - name: Check cluster resource status
-              pacemaker_resource:
-                resource: openstack-cinder-volume
-                state: show
-                check_mode: false
-              ignore_errors: true
-              register: cinder_volume_res_result
-            - name: Set fact cinder_volume_res
-              set_fact:
-                cinder_volume_res: "{{ cinder_volume_res_result.rc == 0 }}"
-        - name: Disable the openstack-cinder-volume cluster resource
-          pacemaker_resource:
-            resource: openstack-cinder-volume
-            state: disable
-            wait_for_resource: true
-          register: cinder_volume_output
-          retries: 5
-          until: cinder_volume_output.rc == 0
-          when:
-            - step|int == 2
-            - release == 'rocky'
-            - is_bootstrap_node|bool
-            - cinder_volume_res|bool

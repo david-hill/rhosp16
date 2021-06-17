@@ -4,6 +4,10 @@ description: >
   OpenStack containerized Ironic Inspector service (EXPERIMENTAL)
 
 parameters:
+  ContainerIronicInspectorImageStein:
+    description: image
+    type: string
+    default: ''
   ContainerIronicInspectorImage:
     description: image
     type: string
@@ -161,6 +165,8 @@ parameters:
     type: comma_delimited_list
 
 conditions:
+
+  fast_forward_upgrade: {not: {equals: [{get_param: ContainerIronicInspectorImageStein},'']}}
   enable_ipxe: {equals : [{get_param: IronicInspectorIPXEEnabled}, true]}
   use_swift: {equals : [{get_param: IronicInspectorUseSwift}, true]}
   enable_node_discovery: {equals : [{get_param: IronicInspectorEnableNodeDiscovery}, true]}
@@ -181,6 +187,17 @@ outputs:
     description: Role data for the Ironic Inspector role.
     value:
       service_name: ironic_inspector
+      keystone_resources:
+        ironic-inspector:
+          endpoints:
+            public: {get_param: [EndpointMap, IronicInspectorPublic, uri]}
+            internal: {get_param: [EndpointMap, IronicInspectorInternal, uri]}
+            admin: {get_param: [EndpointMap, IronicInspectorAdmin, uri]}
+          users:
+            ironic-inspector:
+              password: {get_param: IronicPassword}
+          region: {get_param: KeystoneRegion}
+          service: 'baremetal-introspection'
       monitoring_subscription: {get_param: MonitoringSubscriptionIronicInspector}
       config_settings:
         map_merge:
@@ -304,13 +321,6 @@ outputs:
           - ironic::inspector::tftp_root: /var/lib/ironic/tftpboot
           - ironic::inspector::http_root: /var/lib/ironic/httpboot
       service_config_settings:
-        keystone:
-          ironic::keystone::auth_inspector::tenant: 'service'
-          ironic::keystone::auth_inspector::public_url: {get_param: [EndpointMap, IronicInspectorPublic, uri]}
-          ironic::keystone::auth_inspector::internal_url: {get_param: [EndpointMap, IronicInspectorInternal, uri]}
-          ironic::keystone::auth_inspector::admin_url: {get_param: [EndpointMap, IronicInspectorAdmin, uri]}
-          ironic::keystone::auth_inspector::password: {get_param: IronicPassword}
-          ironic::keystone::auth_inspector::region: {get_param: KeystoneRegion}
         mysql:
           ironic::inspector::db::mysql::password: {get_param: IronicPassword}
           ironic::inspector::db::mysql::user: ironic-inspector
@@ -363,67 +373,82 @@ outputs:
           command: /sbin/dnsmasq --conf-file=/etc/ironic-inspector/dnsmasq.conf -k --log-facility=/var/log/ironic-inspector/dnsmasq.log
       docker_config:
         step_3:
-          ironic_inspector_init_log:
-            start_order: 0
-            image: &ironic_inspector_image
-              get_param: ContainerIronicInspectorImage
-            net: none
-            user: root
-            volumes:
-              - /var/log/containers/ironic-inspector:/var/log/ironic-inspector:z
-            command: ['/bin/bash', '-c', 'chown -R ironic-inspector:ironic-inspector /var/log/ironic-inspector']
-
-          ironic_inspector_init_dnsmasq_dhcp_hostsdir:
-            start_order: 1
-            image: *ironic_inspector_image
-            net: none
-            user: root
-            volumes:
-            - /var/lib/ironic-inspector/dhcp-hostsdir:/var/lib/ironic-inspector/dhcp-hostsdir:shared,z
-            command: ['/bin/bash', '-c', 'chown -R ironic-inspector:ironic-inspector /var/lib/ironic-inspector/dhcp-hostsdir']
-          ironic_inspector_db_sync:
-            start_order: 2
-            image: *ironic_inspector_image
-            net: host
-            user: root
-            privileged: false
-            detach: false
-            volumes:
-              list_concat:
-                - {get_attr: [ContainersCommon, volumes]}
-                -
-                  - /var/lib/kolla/config_files/ironic_inspector.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/ironic_inspector/etc/ironic-inspector:/etc/ironic-inspector:ro
+          map_merge:
+            - ironic_inspector_init_log:
+                start_order: 0
+                image: &ironic_inspector_image
+                  get_param: ContainerIronicInspectorImage
+                net: none
+                user: root
+                volumes:
                   - /var/log/containers/ironic-inspector:/var/log/ironic-inspector:z
-            environment:
-              KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
-              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
-            command: "/usr/bin/bootstrap_host_exec ironic_inspector su ironic-inspector -s /bin/bash -c 'ironic-inspector-dbsync --config-file /etc/ironic-inspector/inspector.conf upgrade'"
-          ironic_inspector_get_ipa:
-            start_order: 2
-            image: *ironic_inspector_image
-            net: host
-            user: root
-            privileged: false
-            detach: false
-            volumes:
-              list_concat:
-                - {get_attr: [ContainersCommon, volumes]}
-                -
-                  - /var/lib/kolla/config_files/ironic_inspector.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/ironic:/var/lib/ironic:shared,z
-            environment:
-              KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
-            command:
-              if:
-               - ipa_images
-               - list_join:
-                   - " "
-                   - - "curl -g -o /var/lib/ironic/httpboot/agent.kernel"
-                     - {get_param: [IPAImageURLs, 0]}
-                     - "-o /var/lib/ironic/httpboot/agent.ramdisk"
-                     - {get_param: [IPAImageURLs, 1]}
-               - 'true'
+                command: ['/bin/bash', '-c', 'chown -R ironic-inspector:ironic-inspector /var/log/ironic-inspector']
+              ironic_inspector_init_dnsmasq_dhcp_hostsdir:
+                start_order: 1
+                image: *ironic_inspector_image
+                net: none
+                user: root
+                volumes:
+                - /var/lib/ironic-inspector/dhcp-hostsdir:/var/lib/ironic-inspector/dhcp-hostsdir:shared,z
+                command: ['/bin/bash', '-c', 'chown -R ironic-inspector:ironic-inspector /var/lib/ironic-inspector/dhcp-hostsdir']
+              ironic_inspector_db_sync:
+                start_order: 3
+                image: *ironic_inspector_image
+                net: host
+                user: root
+                privileged: false
+                detach: false
+                volumes: &ironic_inspector_volumes
+                  list_concat:
+                    - {get_attr: [ContainersCommon, volumes]}
+                    -
+                      - /var/lib/kolla/config_files/ironic_inspector.json:/var/lib/kolla/config_files/config.json:ro
+                      - /var/lib/config-data/ironic_inspector/etc/ironic-inspector:/etc/ironic-inspector:ro
+                      - /var/log/containers/ironic-inspector:/var/log/ironic-inspector:z
+                environment:
+                  KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
+                  TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+                command: "/usr/bin/bootstrap_host_exec ironic_inspector su ironic-inspector -s /bin/bash -c 'ironic-inspector-dbsync --config-file /etc/ironic-inspector/inspector.conf upgrade'"
+              ironic_inspector_get_ipa:
+                start_order: 3
+                image: *ironic_inspector_image
+                net: host
+                user: root
+                privileged: false
+                detach: false
+                volumes:
+                  list_concat:
+                    - {get_attr: [ContainersCommon, volumes]}
+                    -
+                      - /var/lib/kolla/config_files/ironic_inspector.json:/var/lib/kolla/config_files/config.json:ro
+                      - /var/lib/ironic:/var/lib/ironic:shared,z
+                environment:
+                  KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
+                command:
+                  if:
+                   - ipa_images
+                   - list_join:
+                       - " "
+                       - - "curl -g -o /var/lib/ironic/httpboot/agent.kernel"
+                         - {get_param: [IPAImageURLs, 0]}
+                         - "-o /var/lib/ironic/httpboot/agent.ramdisk"
+                         - {get_param: [IPAImageURLs, 1]}
+                   - 'true'
+            - if:
+                - fast_forward_upgrade
+                - ironic_inspector_db_sync_stein:
+                    start_order: 2
+                    image: {get_param: ContainerIronicInspectorImageStein}
+                    net: host
+                    user: root
+                    privileged: false
+                    detach: false
+                    volumes: *ironic_inspector_volumes
+                    environment:
+                      KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
+                      TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+                    command: "/usr/bin/bootstrap_host_exec ironic_inspector su ironic-inspector -s /bin/bash -c 'ironic-inspector-dbsync --config-file /etc/ironic-inspector/inspector.conf upgrade'"
+                - {}
         step_4:
           ironic_inspector:
             start_order: 92
@@ -438,7 +463,7 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/ironic_inspector.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/ironic_inspector/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/ironic_inspector:/var/lib/kolla/config_files/src:ro
                   - /var/lib/ironic:/var/lib/ironic:shared,z
                   - /var/log/containers/ironic-inspector:/var/log/ironic-inspector:z
                   - /var/lib/ironic-inspector/dhcp-hostsdir:/var/lib/ironic-inspector/dhcp-hostsdir:shared,z
@@ -458,7 +483,7 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/ironic_inspector_dnsmasq.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/ironic_inspector/:/var/lib/kolla/config_files/src:ro
+                  - /var/lib/config-data/puppet-generated/ironic_inspector:/var/lib/kolla/config_files/src:ro
                   - /var/log/containers/ironic-inspector:/var/log/ironic-inspector:z
                   - /var/lib/ironic-inspector/dhcp-hostsdir:/var/lib/ironic-inspector/dhcp-hostsdir:shared,z
             environment:
@@ -469,18 +494,42 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
-            - { 'path': /var/log/containers/ironic-inspector, 'setype': svirt_sandbox_file_t }
-            - { 'path': /var/log/ironic-inspector, 'setype': svirt_sandbox_file_t }
-        - name: ironic-inspector logs readme
-          copy:
-            dest: /var/log/ironic-inspector/readme.txt
-            content: |
-              Log files from ironic-inspector container can be found under
-              /var/log/containers/ironic-inspector.
-          ignore_errors: true
+            - { 'path': /var/log/containers/ironic-inspector, 'setype': container_file_t, 'mode': '0750' }
+            - { 'path': /var/lib/ironic-inspector/dhcp-hostsdir, 'setype': container_file_t }
         - name: create persistent ironic-inspector dnsmasq dhcp hostsdir
           file:
             path: /var/lib/ironic-inspector/dhcp-hostsdir
             state: directory
             setype: svirt_sandbox_file_t
+        # TODO(emilien): remove the cleanup tasks after Ussuri
+        # https://bugs.launchpad.net/tripleo/+bug/1868934
+        - name: Cleanup unnecessary container config-data
+          block: &ironic_config_data_cleanup
+            - name: Remove /var/lib/config-data/puppet-generated/ironic_inspector/var
+              file:
+                path: /var/lib/config-data/puppet-generated/ironic_inspector/var
+                state: absent
+      upgrade_tasks:
+        - name: Cleanup unnecessary container config-data
+          when:
+            - step|int == 0
+          tags: common
+          block: *ironic_config_data_cleanup
+      external_upgrade_tasks:
+        - when:
+            - step|int == 1
+          tags:
+            - never
+            - system_upgrade_transfer_data
+            - system_upgrade_stop_services
+          block:
+            - name: Stop ironic inspector container
+              import_role:
+                name: tripleo-container-stop
+              vars:
+                tripleo_containers_to_stop:
+                  - ironic_inspector
+                  - ironic_inspector_dnsmasq
+                tripleo_delegate_to: "{{ groups['ironic_inspector'] | default([]) }}"

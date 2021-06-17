@@ -110,6 +110,17 @@ outputs:
     description: Role data for the Placement API role.
     value:
       service_name: placement
+      keystone_resources:
+        placement:
+          endpoints:
+            public: {get_param: [EndpointMap, PlacementPublic, uri]}
+            internal: {get_param: [EndpointMap, PlacementInternal, uri]}
+            admin: {get_param: [EndpointMap, PlacementAdmin, uri]}
+          users:
+            placement:
+              password: {get_param: PlacementPassword}
+          region: {get_param: KeystoneRegion}
+          service: 'placement'
       config_settings:
         map_merge:
           - get_attr: [PlacementLogging, config_settings]
@@ -163,13 +174,6 @@ outputs:
           - rsyslog:
               tripleo_logging_sources_placement:
                 - {get_param: PlacementLoggingSource}
-        keystone:
-          placement::keystone::auth::tenant: 'service'
-          placement::keystone::auth::public_url: {get_param: [EndpointMap, PlacementPublic, uri]}
-          placement::keystone::auth::internal_url: {get_param: [EndpointMap, PlacementInternal, uri]}
-          placement::keystone::auth::admin_url: {get_param: [EndpointMap, PlacementAdmin, uri]}
-          placement::keystone::auth::password: {get_param: PlacementPassword}
-          placement::keystone::auth::region: {get_param: KeystoneRegion}
         mysql:
           placement::db::mysql::password: {get_param: PlacementPassword}
           placement::db::mysql::user: placement
@@ -192,6 +196,17 @@ outputs:
         /var/lib/kolla/config_files/placement_api.json:
           command: /usr/sbin/httpd -DFOREGROUND
           config_files:
+            - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.d"
+              dest: "/etc/httpd/conf.d"
+              merge: false
+              preserve_properties: true
+            - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.modules.d"
+              dest: "/etc/httpd/conf.modules.d"
+              # TODO(emilien) remove optional flag once we get a promotion
+              # https://launchpad.net/bugs/1884115
+              optional: true
+              merge: false
+              preserve_properties: true
             - source: "/var/lib/kolla/config_files/src/*"
               dest: "/"
               merge: true
@@ -211,7 +226,7 @@ outputs:
           get_attr: [PlacementLogging, docker_config, step_2]
         step_3:
           placement_api_db_extract_data_from_nova_api:
-            start_order: 0
+            start_order: 3
             image: &placement_api_image {get_param: ContainerPlacementImage}
             net: host
             detach: false
@@ -243,7 +258,7 @@ outputs:
             # 6: Unable to execute placement's CLI commands
             command: "/usr/bin/bootstrap_host_exec placement su placement -s /bin/bash -c 'cd /tmp && /usr/share/placement/mysql-migrate-db.sh --migrate -; ret=$?; if [ $ret -ne 0 ] && [ $ret -ne 3 ] && [ $ret -ne 4 ] && [ $ret -ne 5 ]; then exit $ret; else exit 0; fi'"
           placement_api_db_sync:
-            start_order: 1
+            start_order: 4
             image: *placement_api_image
             net: host
             detach: false
@@ -273,17 +288,15 @@ outputs:
                 - {get_attr: [PlacementLogging, volumes]}
                 -
                   - /var/lib/kolla/config_files/placement_api.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/puppet-generated/placement/:/var/lib/kolla/config_files/src:ro
-                  -
-                    if:
-                      - internal_tls_enabled
-                      - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
-                      - ''
-                  -
-                    if:
-                      - internal_tls_enabled
-                      - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
-                      - ''
+                  - /var/lib/config-data/puppet-generated/placement:/var/lib/kolla/config_files/src:ro
+                - if:
+                    - internal_tls_enabled
+                    - - /etc/pki/tls/certs/httpd:/etc/pki/tls/certs/httpd:ro
+                    - []
+                - if:
+                    - internal_tls_enabled
+                    - - /etc/pki/tls/private/httpd:/etc/pki/tls/private/httpd:ro
+                    - []
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
           placement_wait_for_service:

@@ -3,7 +3,7 @@
 ###############################################################################
 - name: DistributedComputeHCI
   description: |
-    Distributed Compute Node role hosting Ceph OSD and Cinder volume.
+    Distributed Compute Node role with Ceph, Cinder volume, and Glance.
   networks:
     InternalApi:
       subnet: internal_api_subnet
@@ -20,10 +20,13 @@
   ServicesDefault:
     - OS::TripleO::Services::Aide
     - OS::TripleO::Services::AuditD
+    - OS::TripleO::Services::BarbicanClient
+    - OS::TripleO::Services::BlockStorageCinderVolume
     - OS::TripleO::Services::BootParams
     - OS::TripleO::Services::CACerts
     - OS::TripleO::Services::CephClient
     - OS::TripleO::Services::CephExternal
+    - OS::TripleO::Services::CephGrafana
     - OS::TripleO::Services::CephMds
     - OS::TripleO::Services::CephMgr
     - OS::TripleO::Services::CephMon
@@ -31,7 +34,6 @@
     - OS::TripleO::Services::CephRgw
     - OS::TripleO::Services::CephOSD
     - OS::TripleO::Services::CertmongerUser
-    - OS::TripleO::Services::BlockStorageCinderVolume
     - OS::TripleO::Services::Collectd
     - OS::TripleO::Services::ComputeCeilometerAgent
     - OS::TripleO::Services::ComputeNeutronCorePlugin
@@ -40,12 +42,7 @@
     - OS::TripleO::Services::ComputeNeutronOvsAgent
     - OS::TripleO::Services::Docker
     - OS::TripleO::Services::Etcd
-    # Include the GlanceApiEdge -OR- the HAproxyEdge service, but not both.
-    # Deploy GlanceApiEdge on 2-3 nodes for HA, and HAproxyEdge for each
-    # additional node. The HAproxyEdge service forwards glance-api requests
-    # to the GlanceApiEdge nodes.
     - OS::TripleO::Services::GlanceApiEdge
-    # OS::TripleO::Services::HAproxyEdge
     - OS::TripleO::Services::IpaClient
     - OS::TripleO::Services::Ipsec
     - OS::TripleO::Services::Iscsid

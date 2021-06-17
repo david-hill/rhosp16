@@ -106,7 +106,6 @@ outputs:
             include_role:
               name: tripleo-podman
               tasks_from: tripleo_podman_install.yml
-              vars_from: "redhat.yml"
             vars:
               tripleo_container_registry_insecure_registries: "{{ container_registry_insecure_registries }}"
 
@@ -133,16 +132,79 @@ outputs:
                 path: /etc/sysconfig/podman_drop_in
                 state: absent
 
+      deploy_steps_tasks:
+        - when:
+            - (step|int) == 1
+          block:
+            # NOTE(mwhahaha): validate_certs is a misnomer because what it
+            # actually does is enable the --tls-verify flag which forces
+            # registries to only be over HTTPS. By default, podman will only
+            # use HTTPS registries but has a way to configure specific insecure
+            # and non-HTTPS registries. The --tls-verify flag prevents this
+            # fallback from functioning. We rely on this fallback for the
+            # undercloud registry.
+            - name: Pre-fetch all the containers
+              become: true
+              podman_image:
+                  name: "{{ prefetch_image }}"
+                  validate_certs: false
+                  force: true
+              retries: 5
+              delay: 5
+              loop_control:
+                  loop_var: prefetch_image
+              loop: "{{ lookup('file', tripleo_role_name + '/docker_config.yaml', errors='ignore') | default('{}', True) | from_yaml | recursive_get_key_from_dict(key='image') | unique }}"
+
       service_config_settings: {}
 
       upgrade_tasks:
+        - name: Run podman install
+          when:
+            - step|int == 1
+          block: &podman_configure_registry
+            # This is needed when moving from Docker to Podman. The SELinux context
+            # is wrong for podman, especially if the directory was created by
+            # docker itself.
+            - name: Ensure /var/lib/config-data context
+              shell: |-
+                set -o pipefail
+                if [[ -e /var/lib/config-data ]]; then
+                  chcon -R -t container_file_t /var/lib/config-data
+                  exit 2
+                fi
+              args:
+                executable: /bin/bash
+                warn: no
+              register: _selinux_config_data
+              changed_when: _selinux_config_data.rc == 2
+              failed_when: _selinux_config_data.rc not in [0,2]
+            - name: Make sure the Undercloud hostname is included in /etc/hosts
+              when:
+                - undercloud_hosts_entries is defined
+              lineinfile:
+                dest: /etc/hosts
+                line: "{{ undercloud_hosts_entries | join('') }}"
+                state: present
+            - name: Set container_registry_insecure_registries fact.
+              set_fact:
+                container_registry_insecure_registries:
+                  if:
+                    - insecure_registry_is_empty
+                    - []
+                    - {get_param: DockerInsecureRegistryAddress}
+            - include_role:
+                name: tripleo-podman
+                tasks_from: tripleo_podman_install.yml
+              vars:
+                tripleo_container_registry_insecure_registries: "{{ container_registry_insecure_registries }}"
+
         - name: system_upgrade_prepare step 2
           tags:
             - never
             - system_upgrade
             - system_upgrade_prepare
           when:
-            - (step | int) == 2
+            - step|int == 2
           block:
             - name: Check if pcs is present
               stat:
@@ -162,14 +224,11 @@ outputs:
                 - never
                 - system_upgrade
                 - system_upgrade_prepare
-
-        - name: Run podman install
+      update_tasks:
+        - name: Run podman registry configuration
           when:
-            - (step | int) == 1
-          include_role:
-            name: tripleo-podman
-            tasks_from: tripleo_podman_install.yml
-            vars_from: "redhat.yml"
+            - step|int == 1
+          block: *podman_configure_registry
 
       post_upgrade_tasks:
         - name: Purge everything about docker on the host
