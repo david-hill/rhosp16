@@ -18,6 +18,7 @@ parameter_defaults:
   # FFU parameters
   # Set operating system upgrade
   UpgradeLeappEnabled: true
+  UpgradeLeappDevelSkip: "LEAPP_UNSUPPORTED=1 LEAPP_DEVEL_TARGET_RELEASE=8.4"
   # OpenStack packages to upgrade with the OS upgrade.
   UpgradeLeappToRemove: ['openvswitch2.11','ovn2.11']
   UpgradeLeappToInstall: ['openvswitch2.13','ovn2.13']
@@ -30,4 +31,5 @@ parameter_defaults:
   DnfStreams: [{'module':'container-tools', 'stream':'2.0'},{'module':'virt', 'stream':'8.2'}]
   CephStorageParameters:
     UpgradeLeappCommandOptions: " --enablerepo rhel-8-for-x86_64-baseos-rpms --enablerepo rhel-8-for-x86_64-appstream-rpms "
+    UpgradeLeappDevelSkip: ""
     DnfStreams: [{'module':'container-tools', 'stream':'2.0'}]

@@ -58,6 +58,12 @@ parameters:
     default: "datacentre:br-ex"
     tags:
       - role_specific
+  EnableVLANTransparency:
+    default: false
+    description: >
+        If True, then allow plugins that support it to create VLAN
+        transparent networks.
+    type: boolean
   OVNIntegrationBridge:
     description: >
       Name of the OVS bridge to use as integration bridge by OVN Controller.
@@ -120,6 +126,7 @@ conditions:
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
   insecure_registry_is_empty: {equals : [{get_param: DockerInsecureRegistryAddress}, []]}
   key_size_override_unset: {equals: [{get_param: ContainerOvnCertificateKeySize}, '']}
+  enable_vlan_transparency: {equals: [{get_param: EnableVLANTransparency}, true]}
 
 resources:
 
@@ -198,6 +205,11 @@ outputs:
                     - {get_param: CertificateKeySize}
                     - {get_param: ContainerOvnCertificateKeySize}
             - {}
+          -
+            if:
+            - enable_vlan_transparency
+            - vswitch::ovs::vlan_limit: 0
+            - {}
       service_config_settings: {}
       # BEGIN DOCKER SETTINGS
       puppet_config:
@@ -251,7 +263,7 @@ outputs:
             net: host
             privileged: true
             user: root
-            command: ['/bin/bash', '-c', 'CMS_OPTS=$(hiera ovn::controller::ovn_cms_options -c /etc/puppet/hiera.yaml);  if [ X"$CMS_OPTS" !=  X ]; then ovs-vsctl set open . external_ids:ovn-cms-options=$CMS_OPTS; fi']
+            command: ['/bin/bash', '-c', 'CMS_OPTS=$(hiera ovn::controller::ovn_cms_options -c /etc/puppet/hiera.yaml);  if [ X"$CMS_OPTS" !=  X ]; then ovs-vsctl set open . external_ids:ovn-cms-options=$CMS_OPTS;else ovs-vsctl remove open . external_ids ovn-cms-options; fi']
             image: &ovn_controller_image {get_param: ContainerOvnControllerImage}
             volumes:
               list_concat:

@@ -11,6 +11,7 @@ resource_registry:
 parameter_defaults:
   # Uncomment when smartgateway can handle ceilometer messages
   # CeilometerQdrPublish: true
+  NotificationDriver: 'messagingv2'
   EnableSTF: true
   CollectdConnectionType: amqp1
   CollectdAmqpInterval: 5

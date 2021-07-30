@@ -176,7 +176,7 @@ parameters:
     hidden: true
   NotificationDriver:
     type: string
-    default: 'messagingv2'
+    default: 'noop'
     description: Driver or drivers to handle sending notifications.
   KeystoneChangePasswordUponFirstUse:
     type: string
@@ -653,6 +653,7 @@ outputs:
                     - {get_attr: [ContainersCommon, volumes]}
                     - {get_attr: [KeystoneLogging, volumes]}
                     -
+                      - /etc/openldap:/etc/openldap:ro
                       - /var/lib/kolla/config_files/keystone.json:/var/lib/kolla/config_files/config.json:ro
                       - /var/lib/config-data/puppet-generated/keystone:/var/lib/kolla/config_files/src:ro
                     - if:
@@ -740,7 +741,7 @@ outputs:
           when:
             - step|int == 1
             - not ansible_check_mode|bool
-          block:
+          block: &keystone_generate_clouds
             - name: Create /etc/openstack directory if it does not exist
               become: true
               file:
@@ -774,7 +775,7 @@ outputs:
           when:
             - step|int == 4
             - not ansible_check_mode|bool
-          block:
+          block: &keystone_endpoints
             - name: Manage Keystone resources for OpenStack services
               include_role:
                 name: tripleo-keystone-resources
@@ -814,6 +815,29 @@ outputs:
       host_prep_tasks: {get_attr: [KeystoneLogging, host_prep_tasks]}
       metadata_settings:
         get_attr: [ApacheServiceBase, role_data, metadata_settings]
+      post_upgrade_tasks:
+        - name: Rebuild clouds.yaml content
+          when:
+            - step|int == 0
+            - keystone_short_bootstrap_node_name|lower == ansible_facts['hostname']|lower
+          delegate_to: undercloud
+          block: *keystone_generate_clouds
+        - name: Clean up legacy Cinder keystone catalog entries
+          delegate_to: undercloud
+          os_keystone_service:
+            cloud: {get_param: RootStackName}
+            name: cinderv3
+            service_type: volume
+            state: absent
+          when:
+            - step|int == 1
+            - keystone_short_bootstrap_node_name|lower == ansible_facts['hostname']|lower
+        - name: Run the keystone endpoint creation
+          when:
+            - step|int == 1
+            - keystone_short_bootstrap_node_name|lower == ansible_facts['hostname']|lower
+          delegate_to: undercloud
+          block: *keystone_endpoints
       external_upgrade_tasks:
         - when:
             - step|int == 1

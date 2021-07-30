@@ -454,7 +454,15 @@ parameters:
       ownership and selinux context.
     default:
       - 'triliovault-mounts'
-
+  EnableInternalTLS:
+    type: boolean
+    default: false
+  UseTLSTransportForLiveMigration:
+    type: boolean
+    default: true
+    description: If set to true and if EnableInternalTLS is enabled, it will
+                 set the libvirt URI's transport to tls and configure the
+                 relevant keys for libvirt.
   # DEPRECATED: the following options are deprecated and are currently maintained
   # for backwards compatibility. They will be removed in future release.
   NovaVcpuPinSet:
@@ -642,16 +650,10 @@ conditions:
   insecure_registry_is_empty: {equals : [{get_param: DockerInsecureRegistryAddress}, []]}
   enable_instance_ha: {equals: [{get_param: EnableInstanceHA}, true]}
 
-  enable_live_migration_tunnelled:
-    or:
-      - and:
-        - equals: [{get_param: NovaNfsEnabled}, true]
-        - equals: [{get_param: [RoleParameters, NovaNfsEnabled]}, '']
-      - equals: [{get_param: [RoleParameters, NovaNfsEnabled]}, true]
-      - equals: [{get_param: [RoleParameters, NovaEnableRbdBackend]}, true]
-      - and:
-        - equals: [{get_param: [RoleParameters, NovaEnableRbdBackend]}, '']
-        - equals: [{get_param: NovaEnableRbdBackend}, true]
+  use_tls_for_live_migration:
+    and:
+      - {get_param: EnableInternalTLS}
+      - {get_param: UseTLSTransportForLiveMigration}
 
   libvirt_file_backed_memory_enabled:
     not:
@@ -662,13 +664,6 @@ conditions:
       -  equals: [{get_param: [RoleParameters, NovaLibvirtFileBackedMemory]}, 0]
 
   is_not_additional_cell: {equals: [{get_param: NovaAdditionalCell}, false]}
-
-  nova_nfs_enabled:
-    or:
-      - and:
-        - equals: [{get_param: NovaNfsEnabled}, true]
-        - equals: [{get_param: [RoleParameters, NovaNfsEnabled]}, '']
-      - equals: [{get_param: [RoleParameters, NovaNfsEnabled]}, true]
 
   reserved_huge_pages_set:
     not:
@@ -742,18 +737,7 @@ outputs:
             nova::compute::instance_usage_audit_period: 'hour'
             nova::compute::consecutive_build_service_disable_threshold: {get_param: NovaAutoDisabling}
             nova::compute::live_migration_wait_for_vif_plug: {get_param: NovaLiveMigrationWaitForVIFPlug}
-            # TUNNELLED mode provides a security improvement for migration, but
-            # can't be used in combination with block migration. So we only enable it
-            # when shared storage is available (Ceph RDB is currently the only option).
-            # See https://bugzilla.redhat.com/show_bug.cgi?id=1301986#c12
-            # In future versions of QEMU (2.6, mostly), danpb's native
-            # encryption work will obsolete the need to use TUNNELLED transport
-            # mode.
-            nova::migration::live_migration_tunnelled:
-              if:
-              - enable_live_migration_tunnelled
-              - true
-              - false
+            nova::migration::libvirt::live_migration_tunnelled: false
             # NOTE: bind IP is found in hiera replacing the network name with the
             # local node IP for the given network; replacement examples
             # (eg. for internal_api):
@@ -765,7 +749,7 @@ outputs:
                 template:
                   "%{hiera('$NETWORK')}"
                 params:
-                  $NETWORK: {get_param: [ServiceNetMap, NovaVncProxyNetwork]}
+                  $NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
             nova::compute::vncproxy_host: {get_param: [EndpointMap, NovaPublic, host_nobrackets]}
             nova::vncproxy::common::vncproxy_protocol: {get_param: [EndpointMap, NovaVNCProxyCellPublic, protocol]}
             nova::vncproxy::common::vncproxy_host: {get_param: [EndpointMap, NovaVNCProxyCellPublic, host_nobrackets]}

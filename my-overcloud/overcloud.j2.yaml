@@ -318,6 +318,10 @@ parameters:
     default: {}
     description: Map of extra global_config_settings data to set on each node.
 
+  RootStackName:
+    description: The name of the stack/plan.
+    type: string
+
 {% for role in roles %}
 {%- if role.deprecated_param_scheduler_hints is defined or role.deprecated_param_extraconfig is defined %}
 {%- if not parameter_groups_defined|default(false) %}
@@ -580,10 +584,10 @@ resources:
     type: OS::Heat::Value
     properties:
       value:
-        - if:
-          - {{role.name}}_network_deployment_actions_exists
-          - {get_param: {{role.name}}NetworkDeploymentActions}
-          - {get_param: NetworkDeploymentActions}
+        if:
+        - {{role.name}}_network_deployment_actions_exists
+        - {get_param: {{role.name}}NetworkDeploymentActions}
+        - {get_param: NetworkDeploymentActions}
 
   {{role.name}}ConfigData:
     type: OS::Heat::Value
@@ -757,6 +761,7 @@ resources:
               - {get_param: {{role.name}}SchedulerHints}
           ServiceNames: {get_attr: [{{role.name}}ServiceNames, value]}
           ServiceMetadataSettings: {get_attr: [{{role.name}}ServiceChainRoleData, value, service_metadata_settings]}
+          OVNBridgeMappings: {get_attr: [{{role.name}}ServiceChainRoleData, value, config_settings, 'ovn::controller::ovn_bridge_mappings']}
           DeploymentServerBlacklistDict: {get_attr: [DeploymentServerBlacklistDict, value]}
           RoleParameters:
             map_merge:
@@ -882,6 +887,9 @@ resources:
     type: OS::TripleO::Network
     properties:
       CtlplaneNetworkCidrs: {get_attr: [ControlVirtualIP, network, tags]}
+
+  OVNMacAddressNetwork:
+    type: OS::TripleO::OVNMacAddressNetwork
 
 {%- for role in roles %}
   {{role.name}}GroupVars:
@@ -1209,6 +1217,7 @@ outputs:
           neutron_physical_bridge_name: {get_param: NeutronPhysicalBridge}
           neutron_public_interface_name: {get_param: NeutronPublicInterface}
           network_deployment_actions: {get_attr: [{{role.name}}NetworkDeploymentActionsValue, value]}
+          tripleo_stack_name: {get_param: RootStackName}
         - {get_param: {{role.name}}ExtraGroupVars}
 {%- endfor %}
   RoleNetHostnameMap:

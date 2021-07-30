@@ -53,6 +53,8 @@ parameters:
       development/testing. For example, LEAPP_DEVEL_SKIP_RHSM=1.
     type: string
     default: ''
+    tags:
+      - role_specific
   UpgradeLeappCommandOptions:
     description: |
       In case or using UpgradeLeappDevelSkip with LEAPP_NO_RHSM=1 user
@@ -60,6 +62,8 @@ parameters:
       leapp to use these repositories for the upgrade process.
     type: string
     default: ''
+    tags:
+      - role_specific
   UpgradeLeappRebootTimeout:
     description: Timeout (seconds) for the OS upgrade phase via Leapp
     type: number
@@ -74,16 +78,27 @@ parameters:
     default: []
     description: List of packages to remove during Leapp upgrade.
     type: comma_delimited_list
+    tags:
+      - role_specific
   UpgradeLeappToInstall:
     default: []
     description: List of packages to install after Leapp upgrade.
     type: comma_delimited_list
+    tags:
+      - role_specific
   LeappRepoInitCommand:
     type: string
     description: |
       Command or script snippet to run on all overcloud nodes to
       initialize the Leapp process. E.g. a repository switch.
     default: ''
+  LeappUnloadKernelDrivers:
+    type: comma_delimited_list
+    default: ['floppy', 'pata_acpi']
+    description: |
+      List of modules to unload from the system due to being incompatible
+      with the next RHEL version. If not being unloaded Leapp will
+      inhibit the upgrade.
   LeappInitCommand:
     type: string
     description: |
@@ -96,6 +111,8 @@ parameters:
       Command or script snippet to run on all overcloud nodes to
       initialize the upgrade process. E.g. a repository switch.
     default: ''
+    tags:
+      - role_specific
   UpgradeInitCommonCommand:
     type: string
     description: |
@@ -121,6 +138,8 @@ parameters:
                  module[mandatory], stream[mandatory] and profile[optional]. If the profile
                  is not specified 'common' will be used instead.
     type: json
+    tags:
+      - role_specific
 
 resources:
   RoleParametersValue:
@@ -131,16 +150,20 @@ resources:
         map_replace:
           - map_replace:
             - dnf_module_list: DnfStreams
+              upgrade_leapp_devel_skip: UpgradeLeappDevelSkip
               upgrade_leapp_command_options: UpgradeLeappCommandOptions
               upgrade_leapp_to_remove: UpgradeLeappToRemove
               upgrade_leapp_to_install: UpgradeLeappToInstall
+              upgrade_leapp_modules_to_unload: LeappUnloadKernelDrivers
               upgrade_init_command: UpgradeInitCommand
             - values: {get_param: [RoleParameters]}
           - values:
               DnfStreams: {get_param: DnfStreams}
+              UpgradeLeappDevelSkip: {get_param: UpgradeLeappDevelSkip}
               UpgradeLeappCommandOptions: {get_param: UpgradeLeappCommandOptions}
               UpgradeLeappToRemove: {get_param: UpgradeLeappToRemove}
               UpgradeLeappToInstall: {get_param: UpgradeLeappToInstall}
+              LeappUnloadKernelDrivers: {get_param: LeappUnloadKernelDrivers}
               UpgradeInitCommand: {get_param: UpgradeInitCommand}
 
 outputs:
@@ -169,7 +192,7 @@ outputs:
                  ansible_facts['distribution'] == 'RedHat' and
                  ansible_facts['distribution_major_version'] is version('7', '==') }}
             upgrade_leapp_debug: {get_param: UpgradeLeappDebug}
-            upgrade_leapp_devel_skip: {get_param: UpgradeLeappDevelSkip}
+            upgrade_leapp_devel_skip: {get_attr: [RoleParametersValue, value, 'upgrade_leapp_devel_skip']}
             upgrade_leapp_command_options: {get_attr: [RoleParametersValue, value, 'upgrade_leapp_command_options']}
             upgrade_leapp_command_options: {get_param: UpgradeLeappCommandOptions}
             upgrade_leapp_reboot_timeout: {get_param: UpgradeLeappRebootTimeout}
@@ -297,37 +320,23 @@ outputs:
               package:
                 name: leapp
                 state: latest
-            - name: Check that the /etc/leapp/files/pes-events.json exists on UC
+            - name: Retrieve files in /etc/leapp/files
+              find:
+                paths: "/etc/leapp/files"
+                patterns: "*"
+              register: uc_leapp_files
               delegate_to: undercloud
-              stat:
-                path: '/etc/leapp/files/pes-events.json'
-              register: pes_present
-            - name: Check that the /etc/leapp/files/repomap.csv exists on UC
-              delegate_to: undercloud
-              stat:
-                path: '/etc/leapp/files/repomap.csv'
-              register: repomap_present
             - name: Fetch the Leapp data from undercloud
               fetch:
-                dest: '{{ playbook_dir }}'
-                src: '{{ item }}'
+                dest: "{{ playbook_dir }}"
+                src: "{{ item.path }}"
+              loop: "{{ uc_leapp_files.files }}"
               delegate_to: undercloud
-              with_items:
-              - /etc/leapp/files/pes-events.json
-              - /etc/leapp/files/repomap.csv
-              when:
-                - repomap_present.stat.exists
-                - pes_present.stat.exists
             - name: Copy the Leapp data from undercloud
               copy:
-                dest: '{{ item }}'
-                src: '{{ playbook_dir }}/{{ inventory_hostname }}/{{ item }}'
-              with_items:
-              - /etc/leapp/files/pes-events.json
-              - /etc/leapp/files/repomap.csv
-              when:
-                - repomap_present.stat.exists
-                - pes_present.stat.exists
+                dest: '{{ item.path }}'
+                src: '{{ playbook_dir }}/{{ inventory_hostname }}/{{ item.path }}'
+              loop: "{{ uc_leapp_files.files }}"
             - name: Run LeappInitCommand
               shell:
                 list_join:
@@ -381,9 +390,20 @@ outputs:
             - name: unmount and remove nfs nova entry
               mount: path=/var/lib/nova/instances state=absent
               ignore_errors: true
-            - name: set leapp options
-              shell: >
+            - name: Remove kernel drivers from Leapp removed_drivers.txt before running Leapp
+              vars:
+                modules_to_unload: { get_attr: [RoleParametersValue, value, 'upgrade_leapp_modules_to_unload']}
+              lineinfile:
+                path: "/usr/share/leapp-repository/repositories/system_upgrade/el7toel8/actors/kernel/checkkerneldrivers/files/removed_drivers.txt"
+                regexp: "{{ item }}"
+                state: absent
+              loop: "{{ modules_to_unload }}"
+            - name: set leapp required answers
+              shell: |
+                # PAM module pam_pkcs11 is no longer available in RHEL-8 since it was replaced by SSSD
                 leapp answer --section remove_pam_pkcs11_module_check.confirm=True --add
+                # Required for TLS-Everywhere, switch from authconfig to authselect
+                leapp answer --section authselect_check.confirm=True --add
             - name: run leapp upgrade (download packages)
               shell: >
                 {% if upgrade_leapp_devel_skip|default(false) %}{{ upgrade_leapp_devel_skip }}{% endif %}
@@ -484,6 +504,7 @@ outputs:
                   - os-net-config
                   - puppet-tripleo
                   - python3-heat-agent*
+                  - rhosp-release
                   - rsync
                 state: present
               when: ansible_facts['distribution_major_version'] is version('8', '==')

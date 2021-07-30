@@ -11,3 +11,4 @@ resource_registry:
 parameter_defaults:
   CeilometerEnablePanko: false
   CeilometerQdrPublish: true
+  NotificationDriver: 'messagingv2'

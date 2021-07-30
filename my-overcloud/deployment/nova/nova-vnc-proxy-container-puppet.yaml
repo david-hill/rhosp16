@@ -20,10 +20,6 @@ parameters:
     description: Mapping of service endpoint -> protocol. Typically set
                  via parameter_defaults in the resource registry.
     type: json
-  AdminPassword:
-    description: The password for the keystone admin account, used for monitoring, querying neutron etc.
-    type: string
-    hidden: true
   ServiceData:
     default: {}
     description: Dictionary packing service data
@@ -55,7 +51,7 @@ parameters:
                  enable TLS transaport for libvirt VNC and configure the
                  relevant keys for libvirt.
   InternalTLSVncProxyCAFile:
-    default: '/etc/pki/CA/certs/vnc.crt'
+    default: '/etc/ipa/ca.crt'
     type: string
     description: Specifies the CA cert to use for VNC TLS.
   CertificateKeySize:
@@ -91,7 +87,9 @@ parameters:
     constraints:
     - allowed_values: ['', 'UPGRADE']
     default: ''
-
+  RootStackName:
+    description: The name of the stack/plan.
+    type: string
 
 conditions:
 
@@ -108,6 +106,8 @@ conditions:
     equals:
       - {get_param: LibvirtVncCACert}
       - ''
+
+  libvirt_vnc_ca_non_default: {not: {equals: [{get_param: InternalTLSVncProxyCAFile}, '/etc/ipa/ca.crt']}}
 
   allow_noauth:
     # Allow noauth VNC connections during P->Q upgrade. Remove in Rocky.
@@ -162,7 +162,7 @@ outputs:
                 template:
                   "%{hiera('$NETWORK')}"
                 params:
-                  $NETWORK: {get_param: [ServiceNetMap, NovaApiNetwork]}
+                  $NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
             tripleo::nova_vnc_proxy::firewall_rules:
               '137 nova_vnc_proxy':
                 dport:
@@ -191,7 +191,7 @@ outputs:
                   libvirt-vnc-client-cert:
                     cacertfile:
                       if:
-                        - libvirt_vnc_specific_ca_unset
+                        - libvirt_vnc_ca_non_default
                         - get_param: InternalTLSVncProxyCAFile
                         - null
                     service_certificate: '/etc/pki/libvirt-vnc/client-cert.pem'
@@ -201,12 +201,12 @@ outputs:
                       str_replace:
                         template: "%{hiera('fqdn_NETWORK')}"
                         params:
-                          NETWORK: {get_param: [ServiceNetMap, NovaVncProxyNetwork]}
+                          NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
                     principal:
                       str_replace:
                         template: "libvirt-vnc/%{hiera('fqdn_NETWORK')}"
                         params:
-                          NETWORK: {get_param: [ServiceNetMap, NovaVncProxyNetwork]}
+                          NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
                     key_size:
                       if:
                         - key_size_libvirtvnc_override_unset
@@ -219,12 +219,12 @@ outputs:
                     str_replace:
                       template: "%{hiera('fqdn_NETWORK')}"
                       params:
-                        NETWORK: {get_param: [ServiceNetMap, NovaApiNetwork]}
+                        NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
                   principal:
                     str_replace:
                       template: "novnc-proxy/%{hiera('fqdn_NETWORK')}"
                       params:
-                        NETWORK: {get_param: [ServiceNetMap, NovaApiNetwork]}
+                        NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
                   key_size:
                     if:
                       - key_size_novavnc_override_unset
@@ -308,10 +308,10 @@ outputs:
           - use_tls_for_vnc
           -
             - service: libvirt-vnc
-              network: {get_param: [ServiceNetMap, NovaVncProxyNetwork]}
+              network: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
               type: node
             - service: novnc-proxy
-              network: {get_param: [ServiceNetMap, NovaApiNetwork]}
+              network: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
               type: node
           - null
       deploy_steps_tasks:
@@ -356,19 +356,12 @@ outputs:
                 comment: qemu user
       post_upgrade_tasks:
         - when:
-            - step|int == 5
+            - step|int == 4
           tags:
             - never
             - system_upgrade_stop_services
           environment:
-            OS_USERNAME: admin
-            OS_USER_DOMAIN_NAME: "Default"
-            OS_PROJECT_DOMAIN_NAME: "Default"
-            OS_PROJECT_NAME: admin
-            OS_PASSWORD: { get_param: AdminPassword }
-            OS_AUTH_URL: { get_param: [EndpointMap, KeystoneV3Public, uri] }
-            OS_IDENTITY_API_VERSION: 3
-            OS_AUTH_TYPE: password
+            OS_CLOUD: {get_param: RootStackName}
           block:
             - name: Get nova-consoleauth service ID
               command: openstack compute service list --service nova-consoleauth --column ID  --column Host --format yaml
