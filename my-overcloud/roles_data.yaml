@@ -12,6 +12,9 @@
   tags:
     - primary
     - controller
+    # Create external Neutron bridge for SNAT (and floating IPs when using
+    # ML2/OVS without DVR)
+    - external_bridge
   networks:
     External:
       subnet: external_subnet
@@ -62,7 +65,9 @@
     - OS::TripleO::Services::CinderApi
     - OS::TripleO::Services::CinderBackendDellPs
     - OS::TripleO::Services::CinderBackendDellSc
+    - OS::TripleO::Services::CinderBackendDellEMCPowerFlex
     - OS::TripleO::Services::CinderBackendDellEMCPowermax
+    - OS::TripleO::Services::CinderBackendDellEMCPowerStore
     - OS::TripleO::Services::CinderBackendDellEMCSc
     - OS::TripleO::Services::CinderBackendDellEMCUnity
     - OS::TripleO::Services::CinderBackendDellEMCVMAXISCSI
@@ -388,6 +393,7 @@
   deprecated_nic_config_name: 'ceph-storage.yaml'
   # CephOSD present so serial has to be 1
   update_serial: 1
+  rhsm_enforce: False
   ServicesDefault:
     - OS::TripleO::Services::Aide
     - OS::TripleO::Services::AuditD

@@ -66,8 +66,7 @@ outputs:
               vars:
                 tripleo_containers_to_rm:
                   - openstack-sahara-engine
-                tripleo_container_cli:
-                  - podman
+                tripleo_container_cli: 'podman'
               when:
                 - sahara_engine_enabled|bool
 

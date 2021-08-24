@@ -389,12 +389,12 @@ outputs:
         keystone_resources: {get_param: KeystoneResourcesConfigs}
       common_deploy_steps_playbooks: {get_file: deploy-steps-playbooks-common.yaml}
       common_deploy_steps_tasks: {get_file: deploy-steps-tasks.yaml}
+      common_container_config_scripts: {get_file: common-container-config-scripts.yaml}
       hiera_steps_tasks: {get_file: hiera-steps-tasks.yaml}
       deploy_steps_tasks_step_0: {get_file: deploy-steps-tasks-step-0.yaml}
       common_deploy_steps_tasks_step_1: {get_file: deploy-steps-tasks-step-1.yaml}
       docker_puppet_script: {get_file: ./container-puppet.py}
       container_puppet_script: {get_file: ./container-puppet.sh}
-      all_nodes_validation_script.sh : {get_file: ../validation-scripts/all-nodes.sh}
       deploy-artifacts.sh : {get_file: ../puppet/deploy-artifacts.sh}
       generate-config-tasks: {get_file: generate-config-tasks.yaml}
       host-container-puppet-tasks: {get_file: host-container-puppet-tasks.yaml}
@@ -425,6 +425,7 @@ outputs:
                 deploy_target_host: "DEPLOY_TARGET_HOST"
 
             - hosts: DEPLOY_TARGET_HOST
+              strategy: tripleo_linear
               name: Manage SELinux
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
@@ -436,6 +437,7 @@ outputs:
                     state: SELINUX_MODE
 
             - hosts: all
+              strategy: tripleo_linear
               name: Generate /etc/hosts
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
@@ -451,6 +453,7 @@ outputs:
 {% endraw %}
 
             - hosts: DEPLOY_TARGET_HOST
+              strategy: tripleo_linear
               name: Common roles for TripleO servers
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
@@ -471,6 +474,7 @@ outputs:
                 - common_roles
 
             - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
+              strategy: tripleo_free
               name: Overcloud deploy step tasks for step 0
               become: true
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
@@ -496,16 +500,29 @@ outputs:
                 - step0
 
             - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
-              name: Server pre deployment steps
+              strategy: tripleo_free
+              name: Server pre network steps
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
               tasks:
+{% raw %}
                 - import_tasks: hiera_steps_tasks.yaml
+                - name: Server pre-network deployments
+                  delegate_to: localhost
+                  run_once: true
+                  debug:
+                    msg: Use --start-at-task 'Server pre-network deployments' to resume from this task
+                - include_tasks: deployments.yaml
+                  vars:
+                    force: false
+                  with_items: "{{ hostvars[inventory_hostname]['pre_network_' ~ tripleo_role_name]|default([]) }}"
               tags:
                 - overcloud
                 - pre_deploy_steps
+{% endraw %}
 
             - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
+              strategy: tripleo_free
               name: Server deployments
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
@@ -516,10 +533,6 @@ outputs:
                   run_once: true
                   debug:
                     msg: Use --start-at-task "Server deployments" to resume from this task
-                - include_tasks: deployments.yaml
-                  vars:
-                    force: false
-                  with_items: "{{ hostvars[inventory_hostname]['pre_deployments_' ~ tripleo_role_name]|default([]) }}"
 
                 - name: Check NetworkConfig script existence
                   local_action:
@@ -545,16 +558,26 @@ outputs:
                     tripleo_network_config_async_poll: "{{ async_poll | default(3) }}"
                   when:
                     - NetworkConfig_stat.stat.exists
+              tags:
+                - overcloud
+                - pre_deploy_steps
+{% endraw %}
 
-                - name: AllNodesValidationConfig
-                  script: all_nodes_validation_script.sh
-                  environment:
-                    validate_controllers_icmp: "{{ validate_controllers_icmp }}"
-                    validate_gateways_icmp: "{{ validate_gateways_icmp }}"
-                    validate_fqdn: "{{ validate_fqdn }}"
-                    ping_test_ips: "{{ ping_test_ips | to_json }}"
-                    tripleo_role_name: "{{ tripleo_role_name }}"
-
+            - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
+              strategy: tripleo_free
+              name: Server deployments
+              gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
+              any_errors_fatal: yes
+              tasks:
+{% raw %}
+                - name: Basic Network Validation
+                  include_role:
+                    name: tripleo_nodes_validation
+                  vars:
+                    tripleo_nodes_validation_validate_controllers_icmp: "{{ validate_controllers_icmp }}"
+                    tripleo_nodes_validation_validate_gateways_icmp: "{{ validate_gateways_icmp }}"
+                    tripleo_nodes_validation_validate_fqdn: "{{ validate_fqdn }}"
+                    tripleo_nodes_validation_ping_test_ips: "{{ ping_test_ips.get(tripleo_role_name).split(' ') | list | unique }}"
                 - name: ArtifactsConfig
                   script: deploy-artifacts.sh
                   environment:
@@ -566,6 +589,24 @@ outputs:
 {% endraw %}
 
             - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
+              strategy: tripleo_free
+              name: Server pre deployment steps
+              gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
+              any_errors_fatal: yes
+              tasks:
+{% raw %}
+                - import_tasks: hiera_steps_tasks.yaml
+                - include_tasks: deployments.yaml
+                  vars:
+                    force: false
+                  with_items: "{{ hostvars[inventory_hostname]['pre_deployments_' ~ tripleo_role_name]|default([]) }}"
+              tags:
+                - overcloud
+                - pre_deploy_steps
+{% endraw %}
+
+            - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
+              strategy: tripleo_free
               name: Host prep steps
               become: true
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
@@ -593,7 +634,7 @@ outputs:
                       run_once: true
                       debug:
                         msg: Use --start-at-task '{{role.name}} Host prep steps' to resume from this task
-                    - import_tasks: {{role.name}}/host_prep_tasks.yaml
+                    - include_tasks: {{role.name}}/host_prep_tasks.yaml
 {%- endfor %}
               tags:
                 - overcloud
@@ -602,6 +643,7 @@ outputs:
 {%- for step in range(1,deploy_steps_max) %}
 
             - hosts: DEPLOY_SOURCE_HOST
+              strategy: tripleo_free
               name: External deployment step {{step}}
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
@@ -634,6 +676,7 @@ outputs:
                 - step{{step}}
 
             - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
+              strategy: tripleo_free
               name: Overcloud deploy step tasks for {{step}}
               become: true
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
@@ -683,9 +726,9 @@ outputs:
                       run_once: true
                       debug:
                         msg: Use --start-at-task 'Overcloud common bootstrap tasks for step 1' to resume from this task
-                    - name: "Check if /var/lib/tripleo-config/container-startup-config-step_1.json already exists"
+                    - name: "Check if /var/lib/tripleo-config/container-startup-config/step_{{step}} already exists"
                       stat:
-                        path: "/var/lib/tripleo-config/container-startup-config-step_1.json"
+                        path: "/var/lib/tripleo-config/container-startup-config/step_{{step}}"
                       register: container_startup_configs_json_stat
                     - name: Write config data at the start of step 1
                       include_tasks: common_deploy_steps_tasks_step_1.yaml
@@ -700,9 +743,9 @@ outputs:
                       run_once: true
                       debug:
                         msg: Use --start-at-task 'Overcloud common deploy step tasks {{step}}' to resume from this task
-                    - name: "Check if /var/lib/tripleo-config/container-startup-config-step_{{step}}.json already exists"
+                    - name: "Check if /var/lib/tripleo-config/container-startup-config/step_{{step}} already exists"
                       stat:
-                        path: "/var/lib/tripleo-config/container-startup-config-step_{{step}}.json"
+                        path: "/var/lib/tripleo-config/container-startup-config/step_{{step}}"
                       register: container_startup_configs_json_stat
                     - include_tasks: common_deploy_steps_tasks.yaml
                       when: (deploy_identifier is defined and deploy_identifier != "" and deploy_identifier is not none) or
@@ -714,6 +757,7 @@ outputs:
 
 {%- endfor %}
             - hosts: {{primary_role_name}}:DEPLOY_TARGET_HOST
+              strategy: tripleo_free
               name: Server Post Deployments
               become: true
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
@@ -735,6 +779,7 @@ outputs:
 {% endraw %}
 
             - hosts: DEPLOY_SOURCE_HOST
+              strategy: tripleo_linear
               name: External deployment Post Deploy tasks
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
@@ -782,6 +827,7 @@ outputs:
 {%- for role in roles %}
             - hosts: {{role.name}}
               name: Run update
+              become: true
               serial: "{% raw %}{{ update_serial | default({% endraw %}{{ role.update_serial | default(1) }}{% raw %})}}{% endraw %}"
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
@@ -798,8 +844,10 @@ outputs:
                 docker_puppet_process_count: DOCKER_PUPPET_PROCESS_COUNT
                 docker_puppet_mount_host_puppet: DOCKER_PUPPET_MOUNT_HOST_PUPPET
                 tripleo_minor_update: true
+                tripleo_redhat_enforce: {{role.rhsm_enforce|default("true")}}
               tasks:
                 - import_tasks: hiera_steps_tasks.yaml
+                - import_tasks: common_container_config_scripts.yaml
                 - include_tasks: update_steps_tasks.yaml
                   with_sequence: start=0 end={{update_steps_max-1}}
                   loop_control:
@@ -925,6 +973,7 @@ outputs:
                 deploy_target_host: "DEPLOY_TARGET_HOST"
 {%- for step in range(0,upgrade_steps_max) %}
             - hosts: DEPLOY_TARGET_HOST
+              strategy: tripleo_free
               name: Upgrade tasks for step {{step}}
               become: true
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
@@ -964,6 +1013,7 @@ outputs:
                 deploy_source_host: "DEPLOY_SOURCE_HOST"
                 deploy_target_host: "DEPLOY_TARGET_HOST"
             - hosts: DEPLOY_TARGET_HOST
+              strategy: tripleo_free
               any_errors_fatal: yes
               tasks:
                 - include_tasks: post_upgrade_steps_tasks.yaml
@@ -992,6 +1042,7 @@ outputs:
                 deploy_target_host: "DEPLOY_TARGET_HOST"
 {%- for step in range(external_upgrade_steps_max) %}
             - hosts: DEPLOY_SOURCE_HOST
+              strategy: tripleo_free
               name: External upgrade step {{step}}
               gather_facts: "{% raw %}{{ gather_facts | default(false) }}{% endraw %}"
               any_errors_fatal: yes
@@ -1062,7 +1113,6 @@ outputs:
               vars:
                 deploy_source_host: "DEPLOY_SOURCE_HOST"
                 deploy_target_host: "DEPLOY_TARGET_HOST"
-                scale_ignore_unreachable: true
 
             - hosts: DEPLOY_TARGET_HOST
               name: Scaling
@@ -1094,9 +1144,9 @@ outputs:
                   loop_control:
                     loop_var: step
                   tags: always
-                  # we use ansible_hostname to determine if the host is alive
+                  # we use ansible_facts['hostname'] to determine if the host is alive
                   # or not.
-                  when: ansible_hostname is defined
+                  when: ansible_facts['hostname'] is defined
                 # We don't want to run the scale tasks on dead nodes, to allow
                 # the operator to scale down the cloud no matter the state of
                 # the servers.
@@ -1107,9 +1157,9 @@ outputs:
                     msg: "Node is unreachable. No scale tasks will be run."
                   ignore_errors: True
                   tags: always
-                  # we use ansible_hostname to determine if the host is alive
+                  # we use ansible_facts['hostname'] to determine if the host is alive
                   # or not.
-                  when: ansible_hostname is not defined
+                  when: ansible_facts['hostname'] is not defined
               tags:
                 - scale
       post_update_steps_tasks: |

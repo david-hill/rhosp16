@@ -121,6 +121,15 @@ outputs:
       wait-port-and-run.sh:
         mode: "0755"
         content: { get_file: ../container_config_scripts/wait-port-and-run.sh }
+      pacemaker_resource_lock.sh:
+        mode: "0755"
+        content: { get_file: ../container_config_scripts/pacemaker_resource_lock.sh }
+      pacemaker_mutex_restart_bundle.sh:
+        mode: "0755"
+        content: { get_file: ../container_config_scripts/pacemaker_mutex_restart_bundle.sh }
+      pacemaker_mutex_shutdown.sh:
+        mode: "0755"
+        content: { get_file: ../container_config_scripts/pacemaker_mutex_shutdown.sh }
 
   volumes_base:
     description: Base volume list
@@ -158,8 +167,7 @@ outputs:
     value:
       list_concat:
         - *volumes_base
-        - - /var/lib/container-config-scripts/pacemaker_restart_bundle.sh:/pacemaker_restart_bundle.sh:ro
-          - /var/lib/container-config-scripts/pacemaker_wait_bundle.sh:/pacemaker_wait_bundle.sh:ro
+        - - /var/lib/container-config-scripts:/var/lib/container-config-scripts:ro
           - /dev/shm:/dev/shm:rw
           # required for bootstrap_host_exec, facter
           - /etc/puppet:/etc/puppet:ro

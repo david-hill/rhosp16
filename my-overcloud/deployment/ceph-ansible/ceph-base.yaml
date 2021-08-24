@@ -65,6 +65,10 @@ parameters:
     type: boolean
     default: false
     description: Parameter used to trigger the dashboard deployment.
+  NodeExporterContainerImage:
+    description: Ceph NodeExporter container image
+    default: ''
+    type: string
   CephAnsiblePlaybook:
     type: comma_delimited_list
     description: >
@@ -97,6 +101,12 @@ parameters:
       description: >
         The Ceph cluster name must be at least 1 character and contain only
         letters and numbers.
+  CephMsgrSecureMode:
+    type: boolean
+    default: false
+    description: >
+      Enable Ceph msgr2 secure mode to enable on-wire encryption between Ceph
+      daemons and also between Ceph clients and daemons.
   CephPoolDefaultPgNum:
     description: default pg_num to use for the RBD pools
     type: number
@@ -301,7 +311,7 @@ parameters:
       The repository that should be used to install the right ceph-ansible
       package. This value can be used by tripleo-validations to double check
       the right ceph-ansible version is installed.
-    default: 'centos-ceph-nautilus'
+    default: 'rhceph-4-tools-for-rhel-8-x86_64-rpms'
   CephAnsibleWarning:
     type: boolean
     description: |
@@ -332,6 +342,9 @@ parameters:
     type: string
     constraints:
     - allowed_values: ['swift', 'file', 'rbd', 's3']
+  EnableInternalTLS:
+    type: boolean
+    default: false
 
 parameter_groups:
 - label: deprecated
@@ -348,6 +361,7 @@ conditions:
   deprecated_data_pool_pgnum: {not: {equals: [{get_param: ManilaCephFSDataPoolPGNum}, 128]}}
   deprecated_metadata_pool_pgnum: {not: {equals: [{get_param: ManilaCephFSMetadataPoolPGNum}, 128]}}
   dashboard_is_enabled: {equals: [{get_param: CephEnableDashboard}, true]}
+  msgr_secure_mode: {equals: [{get_param: CephMsgrSecureMode}, true]}
   custom_registry_host:
     yaql:
       data: {get_param: ContainerCephDaemonImage}
@@ -379,6 +393,7 @@ conditions:
                 expression: let(location => $.data.rightSplit(':', 1)[0]) -> regex('(?:https?://)?(.*?)/(.*)').split($location)[1]
                 data: {get_param: ContainerCephDaemonImage}
             expression: let(c => $.data.cred) -> $c.get($.data.ns, {}).values().last(default => "").isEmpty()
+  internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
 
 resources:
   ContainerImageUrlParts:
@@ -429,6 +444,17 @@ resources:
           - yaql:
               expression: $.data.rightSplit(':', 1)[1]
               data: {get_param: ContainerCephDaemonImage}
+
+  MsgrSecureModeOverrides:
+    type: OS::Heat::Value
+    properties:
+      type: json
+      value:
+        vars:
+          global:
+            ms_cluster_mode: secure
+            ms_service_mode: secure
+            ms_client_mode: secure
 
   DefaultCephConfigOverrides:
     type: OS::Heat::Value
@@ -576,6 +602,7 @@ resources:
             - ipv4
           dashboard_enabled: {get_param: CephEnableDashboard}
           cephfs: {get_param: ManilaCephFSShareBackendName}
+          node_exporter_container_image: {get_param: NodeExporterContainerImage}
 
 outputs:
   role_data:
@@ -590,7 +617,7 @@ outputs:
             state: present
           when:
             - step|int == 1
-            - ansible_distribution_major_version == '8'
+            - ansible_facts['distribution_major_version'] == '8'
       post_upgrade_tasks: []
       puppet_config:
         config_image: ''
@@ -632,7 +659,15 @@ outputs:
                 ceph_pools: {get_attr: [CephBasePoolVars, value, vars]}
                 manila_pools: {get_attr: [CephManilaPoolVars, value, vars]}
                 ceph_keys: {get_attr: [CephKeyVars, value, vars]}
-                ceph_default_overrides: {get_attr: [DefaultCephConfigOverrides, value, vars]}
+                ceph_default_overrides:
+                  if:
+                  - msgr_secure_mode
+                  - yaql:
+                      expression: ($.data.default).mergeWith($.data.secure)
+                      data:
+                        default: {get_attr: [DefaultCephConfigOverrides, value, vars]}
+                        secure: {get_attr: [MsgrSecureModeOverrides, value, vars]}
+                  - {get_attr: [DefaultCephConfigOverrides, value, vars]}
                 ceph_config_overrides: {get_param: CephConfigOverrides}
             - name: set ceph-ansible facts
               set_fact:
@@ -641,6 +676,12 @@ outputs:
                   if:
                   - dashboard_is_enabled
                   - map_merge:
+                    - if:
+                      - internal_tls_enabled
+                      -
+                        dashboard_tls_external: true
+                        dashboard_grafana_api_no_ssl_verify: true
+                      - {}
                     - {get_attr: [CephBaseAnsibleVars, value, vars]}
                     - dashboard_admin_password: {get_param: CephDashboardAdminPassword}
                     - grafana_admin_password: {get_param: CephGrafanaAdminPassword}
@@ -683,6 +724,10 @@ outputs:
                     data: {get_param: CephAnsibleEnvironmentVariables}
                     expression: $.data.items().select($.join('='))
                 ceph_ansible_skip_tags: {get_param:  CephAnsibleSkipTags}
+            - name: Refresh ceph-ansible group_vars variables
+              include_role:
+                name: tripleo-ceph-work-dir
+                tasks_from: prepare
             - name: get ssh private key
               include_role:
                 name: tripleo-ceph-work-dir
@@ -734,6 +779,17 @@ outputs:
               fail:
                 msg: The ceph-ansible filestore to bluestore playbook limit is not set; please use -e ceph_ansible_limit=##nodename##
               when: (ceph_ansible_limit is not defined) or (ceph_ansible_limit|length == 0)
+            - name: ensure ceph health is OK before proceeding
+              import_role:
+                role: ceph
+                tasks_from: ceph-health
+              vars:
+                fail_on_ceph_health_err: true
+                fail_on_ceph_health_warn: true
+                osd_percentage_min: 0
+                tripleo_delegate_to: "{{ groups['ceph_mon'] | default([]) }}"
+              tags:
+                - ceph_health
             - name: set ceph_ansible_playbooks_default
               set_fact:
                 ceph_ansible_playbooks_default: ["/usr/share/ceph-ansible/infrastructure-playbooks/filestore-to-bluestore.yml"]

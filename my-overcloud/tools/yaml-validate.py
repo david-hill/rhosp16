@@ -155,14 +155,6 @@ PARAMETER_DEFINITION_EXCLUSIONS = {
     'BondInterfaceOvsOptions': ['description',
                                 'default',
                                 'constraints'],
-    # NOTE(anil): This is a temporary change and
-    # will be removed once bug #1767070 properly
-    # fixed. OVN supports only VLAN, geneve
-    # and flat for NeutronNetworkType. But VLAN
-    # tenant networks have a limited support
-    # in OVN. Till that is fixed, we restrict
-    # NeutronNetworkType to 'geneve'.
-    'NeutronNetworkType': ['description', 'default', 'constraints'],
     'KeyName': ['constraints'],
     'OVNSouthboundServerPort': ['description'],
     'ExternalInterfaceDefaultRoute': ['description', 'default'],
@@ -218,6 +210,10 @@ VALIDATE_DOCKER_OVERRIDE = {
   # deployment/rabbitmq/rabbitmq-messaging-notify-shared-puppet.yaml does not
   # deploy container
   './deployment/rabbitmq/rabbitmq-messaging-notify-shared-puppet.yaml': False,
+}
+VALIDATE_DOCKER_PUPPET_CONFIG_OVERRIDE = {
+    # inherits from nova-conductor
+  './deployment/nova/nova-manager-container-puppet.yaml': False,
 }
 DEPLOYMENT_RESOURCE_TYPES = [
     'OS::Heat::SoftwareDeploymentGroup',
@@ -679,7 +675,8 @@ def validate_docker_service(filename, tpl):
                           % (section_name, filename))
                     return 1
 
-        if 'puppet_config' in role_data:
+        if 'puppet_config' in role_data and \
+                VALIDATE_DOCKER_PUPPET_CONFIG_OVERRIDE.get(filename, True):
             if validate_docker_service_mysql_usage(filename, tpl):
                 print('ERROR: could not validate use of mysql service for %s.'
                       % filename)

@@ -44,25 +44,21 @@ parameters:
     default: false
     description: Whether to enable the multipath daemon
     type: boolean
-  NovaNfsEnabled:
-    default: false
-    description: Whether to enable or not the NFS backend for Nova
-    type: boolean
-    tags:
-      - role_specific
   IronicApiMaxRetries:
     description: The number of times to retry when a request conflicts. If set to 0, only try once, no retries.
     type: number
     default: -1
+  IronicMaxConcurrentBuilds:
+    description: |
+      The number of builds to process at the same time per each nova-compute instance. If set to 0, it will
+      be set to unlimited (best effort).
+    type: number
+    default: 10
+    constraints:
+      - range: { min: 0 }
 
 conditions:
 
-  nova_nfs_enabled:
-    or:
-      - and:
-        - equals: [{get_param: NovaNfsEnabled}, true]
-        - equals: [{get_param: [RoleParameters, NovaNfsEnabled]}, '']
-      - equals: [{get_param: [RoleParameters, NovaNfsEnabled]}, true]
   ironic_api_max_retry_cond:
     equals: [{get_param: IronicApiMaxRetries}, -1]
 
@@ -71,16 +67,13 @@ resources:
   ContainersCommon:
     type: ../containers-common.yaml
 
-  MySQLClient:
-    type: ../../deployment/database/mysql-client.yaml
-
   NovaComputeCommon:
     type: ./nova-compute-common-container-puppet.yaml
     properties:
-      EndpointMap: {get_param: EndpointMap}
       ServiceData: {get_param: ServiceData}
       ServiceNetMap: {get_param: ServiceNetMap}
       DefaultPasswords: {get_param: DefaultPasswords}
+      EndpointMap: {get_param: EndpointMap}
       RoleName: {get_param: RoleName}
       RoleParameters: {get_param: RoleParameters}
 
@@ -94,6 +87,7 @@ resources:
       RoleName: {get_param: RoleName}
       RoleParameters: {get_param: RoleParameters}
 
+
 outputs:
   role_data:
     description: Role data for the Nova Compute service.
@@ -105,6 +99,7 @@ outputs:
           - nova::compute::force_config_drive: true
             nova::compute::reserved_host_memory: '0'
             nova::compute::vnc_enabled: false
+            nova::compute::ironic::max_concurrent_builds: {get_param: IronicMaxConcurrentBuilds}
             nova::ironic::common::password: {get_param: IronicPassword}
             nova::ironic::common::project_name: 'service'
             nova::ironic::common::auth_url: {get_param: [EndpointMap, KeystoneInternal, uri_no_suffix]}
@@ -118,11 +113,8 @@ outputs:
       puppet_config:
         config_volume: nova
         puppet_tags: nova_config,nova_paste_api_ini
-        step_config:
-          list_join:
-              - "\n"
-              - - include tripleo::profile::base::nova::compute::ironic
-                - {get_attr: [MySQLClient, role_data, step_config]}
+        step_config: |
+          include tripleo::profile::base::nova::compute::ironic
         config_image: {get_param: ContainerNovaConfigImage}
       kolla_config:
         /var/lib/kolla/config_files/nova_ironic.json:
@@ -219,3 +211,18 @@ outputs:
             persistent: yes
             state: yes
       external_post_deploy_tasks: {get_attr: [NovaComputeCommon, nova_compute_common_deploy_steps_tasks]}
+      external_upgrade_tasks:
+        - when:
+            - step|int == 1
+          tags:
+            - never
+            - system_upgrade_transfer_data
+            - system_upgrade_stop_services
+          block:
+            - name: Stop nova ironic container
+              import_role:
+                name: tripleo-container-stop
+              vars:
+                tripleo_containers_to_stop:
+                  - nova_compute
+                tripleo_delegate_to: "{{ groups['nova_ironic'] | default([]) }}"

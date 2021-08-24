@@ -53,6 +53,18 @@ parameters:
           username: pa55word
         '192.0.2.1:8787':
           registry_username: password
+  ContainerDefaultPidsLimit:
+    type: number
+    default: 4096
+    description: Setting to configure the default pids_limit in /etc/container/container.conf.
+                 This is supported starting with podman 2.0.x
+  ContainerDefaultEventsLogger:
+    type: string
+    default: 'journald'
+    description: Setting to configure where podman logs its events. Uses journald by default
+                 as that will rotate data stored in tmpfs.
+    constraints:
+      - allowed_values: ['journald', 'file', 'none']
   SystemdDropInDependencies:
     default: true
     description: tell the container manager (e.g. paunch) to inject
@@ -85,6 +97,8 @@ outputs:
               # default that is overwritten by the heat -> dict conversion
               container_registry_logins: {}
               container_registry_logins_json: {get_param: ContainerImageRegistryCredentials}
+              container_default_pids_limit: {get_param: ContainerDefaultPidsLimit}
+              container_events_logger_mechanism: {get_param: ContainerDefaultEventsLogger}
 
           - name: Convert logins json to dict
             set_fact:
@@ -108,6 +122,8 @@ outputs:
               tasks_from: tripleo_podman_install.yml
             vars:
               tripleo_container_registry_insecure_registries: "{{ container_registry_insecure_registries }}"
+              tripleo_container_default_pids_limit: "{{ container_default_pids_limit }}"
+              tripleo_container_events_logger_mechanism: "{{ container_events_logger_mechanism }}"
 
           - name: Run podman login
             include_role:
@@ -148,6 +164,7 @@ outputs:
               podman_image:
                   name: "{{ prefetch_image }}"
                   validate_certs: false
+                  force: true
               retries: 5
               delay: 5
               loop_control:
@@ -160,7 +177,7 @@ outputs:
         - name: Run podman install
           when:
             - step|int == 1
-          block:
+          block: &podman_configure_registry
             # This is needed when moving from Docker to Podman. The SELinux context
             # is wrong for podman, especially if the directory was created by
             # docker itself.
@@ -223,6 +240,11 @@ outputs:
                 - never
                 - system_upgrade
                 - system_upgrade_prepare
+      update_tasks:
+        - name: Run podman registry configuration
+          when:
+            - step|int == 1
+          block: *podman_configure_registry
 
       post_upgrade_tasks:
         - name: Purge everything about docker on the host

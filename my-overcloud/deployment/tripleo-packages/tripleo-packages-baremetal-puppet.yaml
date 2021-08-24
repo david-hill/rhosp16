@@ -53,6 +53,8 @@ parameters:
       development/testing. For example, LEAPP_DEVEL_SKIP_RHSM=1.
     type: string
     default: ''
+    tags:
+      - role_specific
   UpgradeLeappCommandOptions:
     description: |
       In case or using UpgradeLeappDevelSkip with LEAPP_NO_RHSM=1 user
@@ -60,24 +62,43 @@ parameters:
       leapp to use these repositories for the upgrade process.
     type: string
     default: ''
+    tags:
+      - role_specific
   UpgradeLeappRebootTimeout:
     description: Timeout (seconds) for the OS upgrade phase via Leapp
     type: number
     default: 3600
+  UpgradeLeappPostRebootDelay:
+    description: |
+      Maximum (seconds) to wait for machine to reboot and respond to a test
+      command.
+    type: number
+    default: 120
   UpgradeLeappToRemove:
     default: []
     description: List of packages to remove during Leapp upgrade.
     type: comma_delimited_list
+    tags:
+      - role_specific
   UpgradeLeappToInstall:
     default: []
     description: List of packages to install after Leapp upgrade.
     type: comma_delimited_list
+    tags:
+      - role_specific
   LeappRepoInitCommand:
     type: string
     description: |
       Command or script snippet to run on all overcloud nodes to
       initialize the Leapp process. E.g. a repository switch.
     default: ''
+  LeappUnloadKernelDrivers:
+    type: comma_delimited_list
+    default: ['floppy', 'pata_acpi']
+    description: |
+      List of modules to unload from the system due to being incompatible
+      with the next RHEL version. If not being unloaded Leapp will
+      inhibit the upgrade.
   LeappInitCommand:
     type: string
     description: |
@@ -90,6 +111,8 @@ parameters:
       Command or script snippet to run on all overcloud nodes to
       initialize the upgrade process. E.g. a repository switch.
     default: ''
+    tags:
+      - role_specific
   UpgradeInitCommonCommand:
     type: string
     description: |
@@ -108,6 +131,40 @@ parameters:
                  Mainly for CI purpose.  It shouldn't matter on other distributions
                  where it's disabled in the role. Set to true to skip the enforcement.
     type: string
+  DnfStreams:
+    default: []
+    description: List of streams to be configured before updating packages. Each list
+                 element contains a dictionary with the following values defined
+                 module[mandatory], stream[mandatory] and profile[optional]. If the profile
+                 is not specified 'common' will be used instead.
+    type: json
+    tags:
+      - role_specific
+
+resources:
+  RoleParametersValue:
+    type: OS::Heat::Value
+    properties:
+      type: json
+      value:
+        map_replace:
+          - map_replace:
+            - dnf_module_list: DnfStreams
+              upgrade_leapp_devel_skip: UpgradeLeappDevelSkip
+              upgrade_leapp_command_options: UpgradeLeappCommandOptions
+              upgrade_leapp_to_remove: UpgradeLeappToRemove
+              upgrade_leapp_to_install: UpgradeLeappToInstall
+              upgrade_leapp_modules_to_unload: LeappUnloadKernelDrivers
+              upgrade_init_command: UpgradeInitCommand
+            - values: {get_param: [RoleParameters]}
+          - values:
+              DnfStreams: {get_param: DnfStreams}
+              UpgradeLeappDevelSkip: {get_param: UpgradeLeappDevelSkip}
+              UpgradeLeappCommandOptions: {get_param: UpgradeLeappCommandOptions}
+              UpgradeLeappToRemove: {get_param: UpgradeLeappToRemove}
+              UpgradeLeappToInstall: {get_param: UpgradeLeappToInstall}
+              LeappUnloadKernelDrivers: {get_param: LeappUnloadKernelDrivers}
+              UpgradeInitCommand: {get_param: UpgradeInitCommand}
 
 outputs:
   role_data:
@@ -135,9 +192,11 @@ outputs:
                  ansible_facts['distribution'] == 'RedHat' and
                  ansible_facts['distribution_major_version'] is version('7', '==') }}
             upgrade_leapp_debug: {get_param: UpgradeLeappDebug}
-            upgrade_leapp_devel_skip: {get_param: UpgradeLeappDevelSkip}
+            upgrade_leapp_devel_skip: {get_attr: [RoleParametersValue, value, 'upgrade_leapp_devel_skip']}
+            upgrade_leapp_command_options: {get_attr: [RoleParametersValue, value, 'upgrade_leapp_command_options']}
             upgrade_leapp_command_options: {get_param: UpgradeLeappCommandOptions}
             upgrade_leapp_reboot_timeout: {get_param: UpgradeLeappRebootTimeout}
+            upgrade_leapp_post_reboot_delay: {get_param: UpgradeLeappPostRebootDelay}
           vars:
             _upgradeLeappEnabled: {get_param: UpgradeLeappEnabled}
           tags:
@@ -198,57 +257,106 @@ outputs:
                   - ''
                   - - "#!/bin/bash\n\n"
                     - {get_param: LeappRepoInitCommand}
+            # WA for UEFI systems rhbz#1925078
+            - name: Check if system was booted via EFI
+              stat:
+                path: /sys/firmware/efi
+              register: efi
+            - name: Check if efi partition is present in /etc/fstab
+              failed_when: false
+              register: efi_fstab
+              shell: |
+                grep efi /etc/fstab
+            - name: Find out the UUID of UEFI device
+              register: efi_dev
+              failed_when: false
+              shell: |
+                blkid -s UUID -o value "$(blkid -t TYPE=vfat | grep -i efi | cut -d ':' -f1)"
+            - name: Check if red is in efibootmgr
+              register: efi_broken
+              failed_when: false
+              shell: |
+                efibootmgr | grep "red$"
+            - when:
+                - efi_fstab.rc is defined
+                - efi_dev.rc is defined
+                - efi_broken.rc is defined
+                - efi.stat.exists|bool
+                - efi_fstab.rc == 1
+                - efi_dev.rc == 0
+                - efi_broken.rc == 0
+              block:
+                - name: Copy /boot/efi/EFI/redhat to /tmp
+                  copy:
+                    src: /boot/efi/EFI/redhat/
+                    dest: /tmp/workaround_1925078_redhat/
+                    remote_src: true
+                - name: Insert /etc/fstab record
+                  lineinfile:
+                    dest: "/etc/fstab"
+                    line: "UUID={{ efi_dev.stdout }} /boot/efi vfat umask=0077 0 1"
+                - name: Mount the /boot/efi
+                  command: mount /boot/efi
+                - name: Copy /tmp/redhat to /boot/efi/EFI/redhat
+                  copy:
+                    src: /tmp/workaround_1925078_redhat/
+                    dest: /boot/efi/EFI/redhat/
+                    remote_src: true
+                - name: Create boot record
+                  shell: |
+                    DEVICE_PATH="$(blkid -t TYPE=vfat | grep -i efi | cut -d ':' -f1)"
+                    DEVICE="$(lsblk -no pkname $DEVICE_PATH)"
+                    PARTITION="$(echo $DEVICE_PATH | awk '{print $NF}' FS=/$DEVICE)"
+                    efibootmgr -c -L 'Red Hat Enterprise Linux' -d $(echo $DEVICE_PATH | sed s/$PARTITION\$//) -p $PARTITION -l '\EFI\redhat\shimx64.efi'
+                - name: Create grub config file
+                  command: grub2-mkconfig -o /boot/efi/EFI/redhat/grub.cfg
+                - name: Remove btrfs module in case fuse just loaded it
+                  failed_when: false
+                  command: rmmod btrfs
+                - name: Set workaround_1925078_fired
+                  set_fact:
+                    workaround_1925078_fired: True
             - name: install leapp
               package:
                 name: leapp
                 state: latest
-            - name: Check that the /etc/leapp/files/pes-events.json exists on UC
+            - name: Retrieve files in /etc/leapp/files
+              find:
+                paths: "/etc/leapp/files"
+                patterns: "*"
+              register: uc_leapp_files
               delegate_to: undercloud
-              stat:
-                path: '/etc/leapp/files/pes-events.json'
-              register: pes_present
-            - name: Check that the /etc/leapp/files/repomap.csv exists on UC
-              delegate_to: undercloud
-              stat:
-                path: '/etc/leapp/files/repomap.csv'
-              register: repomap_present
             - name: Fetch the Leapp data from undercloud
               fetch:
-                dest: '{{ playbook_dir }}'
-                src: '{{ item }}'
+                dest: "{{ playbook_dir }}"
+                src: "{{ item.path }}"
+              loop: "{{ uc_leapp_files.files }}"
               delegate_to: undercloud
-              with_items:
-              - /etc/leapp/files/pes-events.json
-              - /etc/leapp/files/repomap.csv
-              when:
-                - repomap_present.stat.exists
-                - pes_present.stat.exists
             - name: Copy the Leapp data from undercloud
               copy:
-                dest: '{{ item }}'
-                src: '{{ playbook_dir }}/{{ inventory_hostname }}/{{ item }}'
-              with_items:
-              - /etc/leapp/files/pes-events.json
-              - /etc/leapp/files/repomap.csv
-              when:
-                - repomap_present.stat.exists
-                - pes_present.stat.exists
+                dest: '{{ item.path }}'
+                src: '{{ playbook_dir }}/{{ inventory_hostname }}/{{ item.path }}'
+              loop: "{{ uc_leapp_files.files }}"
             - name: Run LeappInitCommand
               shell:
                 list_join:
                   - ''
                   - - "#!/bin/bash\n\n"
                     - {get_param: LeappInitCommand}
+            - name: Remove obsolete nf_conntrack_proto_sctp from /etc/modules-load.d/
+              file:
+                path: /etc/modules-load.d/nf_conntrack_proto_sctp.conf
+                state: absent
             - name: "add packages into Leapp's to_remove file"
               vars:
-                pkg_to_remove: { get_param: UpgradeLeappToRemove }
+                pkg_to_remove: { get_attr: [RoleParametersValue, value, 'upgrade_leapp_to_remove']}
               lineinfile:
                 path: "/etc/leapp/transaction/to_remove"
                 line: "{{ item }}"
               loop: "{{ pkg_to_remove }}"
             - name: "add packages into Leapp's to_install file"
               vars:
-                pkg_to_install: { get_param: UpgradeLeappToInstall }
+                pkg_to_install: {get_attr: [RoleParametersValue, value, 'upgrade_leapp_to_install']}
               lineinfile:
                 path: "/etc/leapp/transaction/to_install"
                 line: "{{ item }}"
@@ -282,6 +390,14 @@ outputs:
             - name: unmount and remove nfs nova entry
               mount: path=/var/lib/nova/instances state=absent
               ignore_errors: true
+            - name: Remove kernel drivers from Leapp removed_drivers.txt before running Leapp
+              vars:
+                modules_to_unload: { get_attr: [RoleParametersValue, value, 'upgrade_leapp_modules_to_unload']}
+              lineinfile:
+                path: "/usr/share/leapp-repository/repositories/system_upgrade/el7toel8/actors/kernel/checkkerneldrivers/files/removed_drivers.txt"
+                regexp: "{{ item }}"
+                state: absent
+              loop: "{{ modules_to_unload }}"
             - name: set leapp options
               shell: >
                 leapp answer --section remove_pam_pkcs11_module_check.confirm=True --add
@@ -305,14 +421,37 @@ outputs:
             - step|int == 4
             - upgrade_leapp_enabled
           block:
+            - name: Reset boot order if WA#1925078 fired and fix grubenv
+              when:
+                - workaround_1925078_fired is defined
+                - workaround_1925078_fired|bool
+              block:
+                - name:
+                  shell: |
+                    NEXT_BOOT="$(efibootmgr -v | grep \\redhat | awk -F'[ t*]' '{print $2}')"
+                    efibootmgr -n $NEXT_BOOT
+                # WA: some versions of grub2 fail to look for grubenv in /boot/grub2/grubenv
+                # In this case we copy the file instead of creating simlink making sure if
+                # this is the case than grubenv is still available for previous bootrecord.
+                - name: Stat /boot/grub2/grubenv
+                  stat:
+                    path: /boot/grub2/grubenv
+                  register: grubenv
+                - name: Copy /boot/grub2/grubenv to /boot/efi/EFI/redhat/grubenv
+                  when: grubenv.stat.islnk is defined and grubenv.stat.islnk == False
+                  copy:
+                    src: /boot/grub2/grubenv
+                    dest: /boot/efi/EFI/redhat/grubenv
+                    remote_src: true
             - name: reboot to perform the upgrade
               reboot:
                 reboot_timeout: "{{upgrade_leapp_reboot_timeout}}"
-            - name: Clear gathered facts from all currently targeted hosts
-              meta: clear_facts
-            - name: Force facts refresh after OS upgrade to refresh cache.
-              setup:
+                test_command: >-
+                  systemctl is-system-running | grep -e running -e degraded
+                post_reboot_delay: "{{ upgrade_leapp_post_reboot_delay }}"
             - name: Set the python to python3
+              vars:
+                ansible_python_interpreter: "/usr/bin/python3"
               shell: alternatives --set python /usr/bin/python3
 
         - name: Package and repo update tasks
@@ -323,16 +462,35 @@ outputs:
                 list_join:
                   - ''
                   - - "#!/bin/bash\n\n"
-                    - {get_param: UpgradeInitCommand}
+                    - {get_attr: [RoleParametersValue, value, 'upgrade_init_command']}
             - name: Run UpgradeInitCommonCommand
               shell:
                 list_join:
                   - ''
                   - - "#!/bin/bash\n\n"
                     - {get_param: UpgradeInitCommonCommand}
+            - name: Ensure DNF modules have the right stream
+              vars:
+                dnf_module_list: {get_attr: [RoleParametersValue, value, 'dnf_module_list']}
+              dnf:
+                name: "@{{ item.module }}:{{ item.stream }}/{{ item.profile|default('common') }}"
+                state: present
+              loop: "{{ dnf_module_list|list }}"
+              when:
+                - ansible_facts['distribution_major_version'] is version('8', '>=')
+                - dnf_module_list|length > 0
             - name: Ensure EL modules are in proper state
               shell: dnf -y distro-sync
-              when: ansible_distribution_major_version == '8'
+              when: ansible_facts['distribution_major_version'] == '8'
+              retries: 5
+              delay: 10
+              register: _dnf_distro_sync
+              until: _dnf_distro_sync is success
+            - name: Clean up Python 2 packages
+              package:
+                name: python2-*
+                state: absent
+              when: ansible_facts['distribution_major_version'] == '8'
             - name: Ensure TripleO prerequisite packages are installed
               package:
                 name:
@@ -341,13 +499,11 @@ outputs:
                   - net-snmp
                   - openstack-selinux
                   - os-net-config
-                  - pacemaker
-                  - pcs
                   - puppet-tripleo
                   - python3-heat-agent*
                   - rsync
                 state: present
-              when: ansible_distribution_major_version == '8'
+              when: ansible_facts['distribution_major_version'] is version('8', '==')
         - name: Special treatment for OpenvSwitch
           tripleo_ovs_upgrade:
           when:
@@ -411,10 +567,6 @@ outputs:
               include_role:
                 name: tripleo-persist
                 tasks_from: cleanup.yml
-            - name: cleanup tripleo_transfer
-              include_role:
-                name: tripleo-transfer
-                tasks_from: cleanup.yml
       update_tasks:
         - name: Enforce RHOSP rules regarding subscription.
           include_role:
@@ -423,8 +575,25 @@ outputs:
             skip_rhel_enforcement: {get_param: SkipRhelEnforcement}
           when:
             - step|int == 0
-            - ansible_distribution == 'RedHat'
+            - ansible_facts['distribution'] == 'RedHat'
             - not (skip_rhel_enforcement | bool)
+        - name: Ensure DNF modules have the right stream
+          vars:
+            dnf_module_list: {get_attr: [RoleParametersValue, value, 'dnf_module_list']}
+          dnf:
+            name: "@{{ item.module }}:{{ item.stream }}/{{ item.profile|default('common') }}"
+            state: present
+          loop: "{{ dnf_module_list|list }}"
+          when:
+            - step|int == 0
+            - ansible_facts['distribution_major_version'] is version('8', '>=')
+            - dnf_module_list|length > 0
+        - name: Ensure virt module packages are not installed on the host.
+          shell: |
+            dnf module remove -y --all virt
+          when:
+            - step|int == 0
+            - ansible_facts['distribution_major_version'] is version('8', '>=')
         - name: Check for existing yum.pid
           stat:  path=/var/run/yum.pid
           register: yum_pid_file

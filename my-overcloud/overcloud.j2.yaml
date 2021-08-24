@@ -275,6 +275,17 @@ parameters:
     type: json
     description: Optional extra Ansible group vars
     default: {}
+
+  {{role.name}}ServiceNetMap:
+    default: {}
+    description: |
+      Role specific ServiceNetMap overrides, the map provided will be merged
+      with the global ServiceNetMap when passing the ServiceNetMap to the
+      {{role.name}}ServiceChain resource and the {{role.name}} resource group.
+      For example:
+      {{role.name}}ServiceNetMap:
+        NovaLibvirtNetwork: internal_api_leaf2
+    type: json
 {% endfor %}
 
   # Identifiers to trigger tasks on nodes
@@ -306,6 +317,10 @@ parameters:
     type: json
     default: {}
     description: Map of extra global_config_settings data to set on each node.
+
+  RootStackName:
+    description: The name of the stack/plan.
+    type: string
 
 {% for role in roles %}
 {%- if role.deprecated_param_scheduler_hints is defined or role.deprecated_param_extraconfig is defined %}
@@ -542,7 +557,10 @@ resources:
     properties:
       Services:
         get_param: {{role.name}}Services
-      ServiceNetMap: {get_attr: [ServiceNetMap, service_net_map]}
+      ServiceNetMap:
+        map_merge:
+          - {get_attr: [ServiceNetMap, service_net_map]}
+          - {get_param: {{role.name}}ServiceNetMap}
       ServiceData:
         net_cidr_map: {get_attr: [NetCidrMapValue, value]}
         net_vip_map: {get_attr: [VipMap, net_ip_map]}
@@ -566,10 +584,10 @@ resources:
     type: OS::Heat::Value
     properties:
       value:
-        - if:
-          - {{role.name}}_network_deployment_actions_exists
-          - {get_param: {{role.name}}NetworkDeploymentActions}
-          - {get_param: NetworkDeploymentActions}
+        if:
+        - {{role.name}}_network_deployment_actions_exists
+        - {get_param: {{role.name}}NetworkDeploymentActions}
+        - {get_param: NetworkDeploymentActions}
 
   {{role.name}}ConfigData:
     type: OS::Heat::Value
@@ -587,7 +605,7 @@ resources:
             - {get_param: {{role.name}}ExtraConfig}
         extraconfig: {get_param: ExtraConfig}
         hieradata_files:
-          - '"%{::uuid}"'
+          - '%{::uuid}'
           - fqdn
           - docker_puppet # Optionally provided by container-puppet.py
           - ansible_managed
@@ -603,7 +621,7 @@ resources:
           - all_nodes # provided by tripleo-hieradata
           - vip_data # provided by tripleo-hieradata
           - net_ip_map
-          - '"%{::osfamily}"'
+          - '%{::osfamily}'
           # The following are required for compatibility with the Controller role
           # where some vendor integrations added hieradata via ExtraConfigPre
           - neutron_bigswitch_data # Optionally provided by Controller/ComputeExtraConfigPre
@@ -710,7 +728,9 @@ resources:
 
   {{role.name}}:
     type: OS::Heat::ResourceGroup
-    depends_on: Networks
+    depends_on:
+      - Networks
+      - OVNMacAddressNetwork
     update_policy:
       batch_create:
         max_batch_size: {get_param: NodeCreateBatchSize}
@@ -722,7 +742,10 @@ resources:
         type: OS::TripleO::{{role.name}}
         properties:
           CloudDomain: {get_param: CloudDomain}
-          ServiceNetMap: {get_attr: [ServiceNetMap, service_net_map]}
+          ServiceNetMap:
+            map_merge:
+              - {get_attr: [ServiceNetMap, service_net_map]}
+              - {get_param: {{role.name}}ServiceNetMap}
           EndpointMap: {get_attr: [EndpointMapData, value]}
           Hostname:
             str_replace:
@@ -740,6 +763,7 @@ resources:
               - {get_param: {{role.name}}SchedulerHints}
           ServiceNames: {get_attr: [{{role.name}}ServiceNames, value]}
           ServiceMetadataSettings: {get_attr: [{{role.name}}ServiceChainRoleData, value, service_metadata_settings]}
+          OVNBridgeMappings: {get_attr: [{{role.name}}ServiceChainRoleData, value, config_settings, 'ovn::controller::ovn_bridge_mappings']}
           DeploymentServerBlacklistDict: {get_attr: [DeploymentServerBlacklistDict, value]}
           RoleParameters:
             map_merge:
@@ -866,40 +890,18 @@ resources:
     properties:
       CtlplaneNetworkCidrs: {get_attr: [ControlVirtualIP, network, tags]}
 
+  OVNMacAddressNetwork:
+    type: OS::TripleO::OVNMacAddressNetwork
+
 {%- for role in roles %}
   {{role.name}}GroupVars:
     type: OS::Heat::Value
     properties:
       value:
-        ctlplane_subnet_cidr:
-          yaql:
-            expression: coalesce($.data, []).where(not isEmpty($)).first().split('/')[-1]
-            data:
-              if:
-              - ctlplane_subnet_cidr_set
-              - [{get_param: ControlPlaneSubnetCidr}]
-              - {get_attr: [ControlVirtualIP, network, tags]}
-        network_cidrs:
-        {%- for network in networks %}
-        {%- if network.enabled|default(true) and network.name in role.networks|default([]) %}
-          {{network.name}}_cidr:
-            yaql:
-              expression: coalesce($.data, []).where(not isEmpty($)).first().split('/')[-1]
-              data: {get_attr: [Networks, net_cidr_map, {{network.name_lower}}]}
-        {%- endif %}
-        {%- endfor %}
         role_networks:
         {%- for network in networks %}
         {%- if network.enabled|default(true) and network.name in role.networks|default([]) %}
           - {{network.name}}
-        {% endif %}
-        {% endfor %}
-        {%- for network in networks %}
-        {%- if network.enabled|default(true) and network.name in role.networks|default([]) %}
-        {{network.name_lower}}_cidr:
-          yaql:
-            expression: coalesce($.data, []).where(not isEmpty($)).first().split('/')[-1]
-            data: {get_attr: [Networks, net_cidr_map, {{network.name_lower}}]}
         {% endif %}
         {% endfor %}
         service_metadata_settings: {get_attr: [{{role.name}}ServiceChainRoleData, value, service_metadata_settings]}
@@ -918,6 +920,12 @@ resources:
         - [{subnet: {get_attr: [ServiceNetMap, vip_subnet_map, ctlplane]}}]
         - get_param: ControlFixedIPs
       replacement_policy: AUTO
+      tags:
+        - tripleo_vip_net=ctlplane
+        - str_replace:
+            template: tripleo_stack_name=$STACK_NAME
+            params:
+              $STACK_NAME: {get_param: 'OS::stack_name'}
 
   RedisVirtualIP:
     depends_on: [Networks, ServiceNetMap]
@@ -996,6 +1004,7 @@ resources:
         - {{network.name_lower}}_virtual_fixed_ip_set
         - {get_param: {{network.name}}VirtualFixedIPs}
         - [{subnet: {get_attr: [ServiceNetMap, vip_subnet_map, {{network.name}}]}}]
+      IsVirtualIP: true
   {% endif %}
 {%- endfor %}
 
@@ -1192,6 +1201,7 @@ outputs:
           neutron_physical_bridge_name: {get_param: NeutronPhysicalBridge}
           neutron_public_interface_name: {get_param: NeutronPublicInterface}
           network_deployment_actions: {get_attr: [{{role.name}}NetworkDeploymentActionsValue, value]}
+          tripleo_stack_name: {get_param: RootStackName}
         - {get_param: {{role.name}}ExtraGroupVars}
 {%- endfor %}
   RoleNetHostnameMap:

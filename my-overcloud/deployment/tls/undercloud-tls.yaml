@@ -50,8 +50,8 @@ outputs:
         # openssl-perl is installed which provides /etc/pki/CA on RHEL8
         - name: Ensure openssl-perl package is present on RHEL8
           when:
-            - ansible_os_family == 'RedHat'
-            - ansible_distribution_major_version == '8'
+            - ansible_facts['os_family'] == 'RedHat'
+            - ansible_facts['distribution_major_version'] is version('8', '==')
           package:
             name: openssl-perl
             state: present
@@ -59,6 +59,9 @@ outputs:
           package:
             name: ipa-client
             state: present
+        - name: Ensure ansible_fqdn is defined
+          set_fact:
+            ansible_fqdn: "{{ ansible_facts['fqdn'] }}"
         - name: Create tripleo-admin user and group
           include_role:
             name: tripleo-create-admin
@@ -75,7 +78,7 @@ outputs:
           when: ipa_otp != ''
         - name: Set keytab permission facts
           set_fact:
-            nova_service: "nova/{{ ansible_nodename }}"
+            nova_service: "nova/{{ ansible_facts['nodename'] }}"
             nova_keytab: "/etc/novajoin/krb5.keytab"
             nova_keytab_group: "tripleo-admin"
         - name: Add directory for keytab

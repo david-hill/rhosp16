@@ -44,6 +44,7 @@ parameters:
     default:
       tag: openstack.nova.consoleauth
       file: /var/log/containers/qdrouterd/metrics_qdr.log
+      startmsg.regex: "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(.[0-9]+ \\+[0-9]+)? [A-Z]+ \\([a-z]+\\) "
   MetricsQdrPort:
     default: 5666
     description: Service name or port number on which the qdrouterd will accept
@@ -141,10 +142,22 @@ parameters:
     default: false
     description: Set to true to enable configuration for STF client.
     type: boolean
+  CertificateKeySize:
+    type: string
+    default: '2048'
+    description: Specifies the private key size used when creating the
+                 certificate.
+  QdrCertificateKeySize:
+    type: string
+    default: ''
+    description: Override the private key size used when creating the
+                 certificate for this service
 
 conditions:
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
+  listener_ssl_enabled: {equals: [{get_param: MetricsQdrUseSSL}, true]}
   enable_stf: {equals: [{get_param: EnableSTF}, true]}
+  key_size_override_unset: {equals: [{get_param: QdrCertificateKeySize}, '']}
 
 
 resources:
@@ -200,7 +213,11 @@ outputs:
             tripleo::profile::base::metrics::qdr::addresses: {get_param: MetricsQdrAddresses}
             tripleo::profile::base::metrics::qdr::autolink_addresses: {get_param: MetricsQdrAutoLinks}
             # ssl support
-            tripleo::profile::base::metrics::qdr::listener_require_ssl: {get_param: MetricsQdrUseSSL}
+            tripleo::profile::base::metrics::qdr::listener_require_ssl:
+              if:
+                - listener_ssl_enabled
+                - 'yes'
+                - 'no'
             tripleo::profile::base::metrics::qdr::listener_require_encrypt: {get_param: MetricsQdrUseEncryption}
             tripleo::profile::base::metrics::qdr::listener_sasl_mech: {get_param: MetricsQdrSaslMechanisms}
             tripleo::profile::base::metrics::qdr::listener_ssl_cert_db: {get_param: MetricsQdrSslCertDb}
@@ -243,6 +260,11 @@ outputs:
                               template: "ROLENAMEMetricsQdrNetwork"
                               params:
                                 ROLENAME: {get_param: RoleName}
+                key_size:
+                  if:
+                    - key_size_override_unset
+                    - {get_param: CertificateKeySize}
+                    - {get_param: QdrCertificateKeySize}
               tripleo::profile::base::metrics::qdr::ssl_profiles:
                 list_concat:
                   - get_param: MetricsQdrSSLProfiles
@@ -332,11 +354,6 @@ outputs:
                   - internal_tls_enabled
                   - - /etc/pki/tls/certs/metrics_qdr.crt:/var/lib/kolla/config_files/src-tls/etc/pki/tls/certs/metrics_qdr.crt:ro
                     - /etc/pki/tls/private/metrics_qdr.key:/var/lib/kolla/config_files/src-tls/etc/pki/tls/private/metrics_qdr.key:ro
-                    - list_join:
-                      - ':'
-                      - - {get_param: InternalTLSCAFile}
-                        - {get_param: InternalTLSCAFile}
-                        - 'ro'
                   - null
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS

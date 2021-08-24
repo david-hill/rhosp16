@@ -30,6 +30,16 @@ parameters:
     description: Mapping of service endpoint -> protocol. Typically set
                  via parameter_defaults in the resource registry.
     type: json
+  NovaLiveMigrationPermitPostCopy:
+    description: >
+      If "True" activates the instance on the destination node before migration is complete,
+      and to set an upper bound on the memory that needs to be transferred. Post copy
+      gets enabled per default if the compute roles is not a realtime role or disabled
+      by this parameter.
+    default: true
+    type: boolean
+    tags:
+      - role_specific
   OvsDpdkCoreList:
     description: >
       List of cores to be used for DPDK lcore threads.  Note, these threads
@@ -107,6 +117,8 @@ parameters:
 
 conditions:
   emc_disable: {equals: [{get_param: OvsDisableEMC}, true]}
+  is_realtime:
+    equals: [{get_param: [RoleParameters, TunedProfileName]}, 'realtime-virtual-host']
 
 resources:
 
@@ -124,6 +136,7 @@ resources:
               disable_emc: OvsDisableEMC
               revalidator: OvsRevalidatorCores
               handler: OvsHandlerCores
+              nova_postcopy: NovaLiveMigrationPermitPostCopy
             - values: {get_param: [RoleParameters]}
           - values:
               OvsDpdkCoreList: {get_param: OvsDpdkCoreList}
@@ -134,6 +147,7 @@ resources:
               OvsDisableEMC: {get_param: OvsDisableEMC}
               OvsRevalidatorCores: {get_param: OvsRevalidatorCores}
               OvsHandlerCores: {get_param: OvsHandlerCores}
+              NovaLiveMigrationPermitPostCopy: {get_param: NovaLiveMigrationPermitPostCopy}
 
   BootParams:
     type: ./../kernel/kernel-boot-params-baremetal-ansible.yaml
@@ -168,3 +182,8 @@ outputs:
                 - emc_disable
                 - 0
                 - ''
+              tripleo_ovs_dpdk_vhost_postcopy_support:
+                if:
+                  - is_realtime
+                  - false
+                  - {get_attr: [RoleParametersDpdk, value, nova_postcopy]}

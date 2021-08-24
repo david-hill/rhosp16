@@ -62,13 +62,36 @@ parameters:
     default: false
     description: Enable IPv6 in MySQL
     type: boolean
+  CertificateKeySize:
+    type: string
+    default: '2048'
+    description: Specifies the private key size used when creating the
+                 certificate.
+  MysqlCertificateKeySize:
+    type: string
+    default: ''
+    description: Override the private key size used when creating the
+                 certificate for this service
+  MysqlInnodbBufferPoolSize:
+    type: string
+    description: Buffer pool size for MySQL database; this needs to be larger
+                 for at-scale deployments
+    default: ''
 
 
 conditions:
 
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
+  key_size_override_unset: {equals: [{get_param: MysqlCertificateKeySize}, '']}
+  innodb_buffer_pool_size: {not: {equals: [{get_param: MysqlInnodbBufferPoolSize}, '']}}
 
 outputs:
+  container_config_scripts:
+    description: Shared docker config scripts
+    value:
+      mysql_upgrade_db.sh:
+        mode: "0755"
+        content: { get_file: ../../container_config_scripts/mysql_upgrade_db.sh }
   role_data:
     description: Service MySQL using composable services.
     value:
@@ -157,6 +180,16 @@ outputs:
                     template: "mysql/%{hiera('fqdn_NETWORK')}"
                     params:
                       NETWORK: {get_param: [ServiceNetMap, MysqlNetwork]}
+                key_size:
+                  if:
+                    - key_size_override_unset
+                    - {get_param: CertificateKeySize}
+                    - {get_param: MysqlCertificateKeySize}
+            - {}
+          -
+            if:
+            - innodb_buffer_pool_size
+            - innodb_buffer_pool_size: {get_param: MysqlInodbBufferPoolSize}
             - {}
       step_config: |
         include ::tripleo::profile::base::database::mysql

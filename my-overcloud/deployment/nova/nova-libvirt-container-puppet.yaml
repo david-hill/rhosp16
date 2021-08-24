@@ -105,17 +105,42 @@ parameters:
     description: Specifies the default CA cert to use if TLS is used for
                  services in the internal network.
   InternalTLSNbdCAFile:
-    default: '/etc/pki/qemu/ca-cert.pem'
+    default: '/etc/ipa/ca.crt'
     type: string
     description: Specifies the CA cert to use for NBD TLS.
   InternalTLSVncCAFile:
-    default: '/etc/pki/CA/certs/vnc.crt'
+    default: '/etc/ipa/ca.crt'
     type: string
     description: Specifies the CA cert to use for VNC TLS.
   InternalTLSQemuCAFile:
-    default: '/etc/pki/CA/certs/qemu.pem'
+    default: '/etc/ipa/ca.crt'
     type: string
     description: Specifies the CA cert to use for qemu.
+  CertificateKeySize:
+    type: string
+    default: '2048'
+    description: Specifies the private key size used when creating the
+                 certificate.
+  LibvirtCertificateKeySize:
+    type: string
+    default: ''
+    description: Override the private key size used when creating the
+                 certificate for this service
+  LibvirtVNCServerCertificateKeySize:
+    type: string
+    default: ''
+    description: Override the private key size used when creating the
+                 certificate for this service
+  QemuServerCertificateKeySize:
+    type: string
+    default: ''
+    description: Override the private key size used when creating the
+                 certificate for this service
+  QemuClientCertificateKeySize:
+    type: string
+    default: ''
+    description: Override the private key size used when creating the
+                 certificate for this service
   LibvirtCACert:
     type: string
     default: ''
@@ -213,12 +238,13 @@ parameters:
     description: The password for the libvirt service when TLS is enabled
     type: string
     hidden: true
-  NovaNfsEnabled:
+  QemuDefaultTLSVerify:
+    description: >
+      Whether to enable or disable TLS client certificate verification. Enabling this
+      option will reject any client who does not have a certificate signed by the CA
+      in /etc/pki/qemu/ca-cert.pem
     default: false
-    description: Whether to enable or not the NFS backend for Nova
     type: boolean
-    tags:
-      - role_specific
   LibvirtLogFilters:
     description: Defines a filter to select a different logging level
                  for a given category log outputs, as specified in
@@ -236,17 +262,19 @@ parameters:
     default: 'all'
     tags:
       - role_specific
+  NovaLibvirtOptVolumes:
+    default: []
+    description: list of optional volumes to be mounted
+    type: comma_delimited_list
+    tags:
+      - role_specific
 
 conditions:
 
   use_tls_for_live_migration:
     and:
-    - equals:
       - {get_param: EnableInternalTLS}
-      - true
-    - equals:
       - {get_param: UseTLSTransportForLiveMigration}
-      - true
 
   libvirt_specific_ca_unset:
     equals:
@@ -283,6 +311,8 @@ conditions:
       - {get_param: LibvirtVncCACert}
       - ''
 
+  libvirt_vnc_ca_non_default: {not: {equals: [{get_param: InternalTLSVncCAFile}, '/etc/ipa/ca.crt']}}
+
   memory_backing_dir_set:
     not:
       and:
@@ -312,17 +342,12 @@ conditions:
       - {get_param: QemuCACert}
       - ''
 
-  docker_enabled:
-    equals:
-      - {get_param: ContainerCli}
-      - 'docker'
+  qemu_ca_non_default: {not: {equals: [{get_param: InternalTLSQemuCAFile}, '/etc/ipa/ca.crt']}}
 
-  nova_nfs_enabled:
-    or:
-      - and:
-        - equals: [{get_param: NovaNfsEnabled}, true]
-        - equals: [{get_param: [RoleParameters, NovaNfsEnabled]}, '']
-      - equals: [{get_param: [RoleParameters, NovaNfsEnabled]}, true]
+  key_size_libvirt_override_unset: {equals: [{get_param: LibvirtCertificateKeySize}, '']}
+  key_size_libvirtvnc_override_unset: {equals: [{get_param: LibvirtVNCServerCertificateKeySize}, '']}
+  key_size_qemu_client_override_unset: {equals: [{get_param: QemuClientCertificateKeySize}, '']}
+  key_size_qemu_server_override_unset: {equals: [{get_param: QemuServerCertificateKeySize}, '']}
 
 resources:
   RoleParametersValue:
@@ -335,18 +360,17 @@ resources:
             - vhostuser_socket_group: VhostuserSocketGroup
               nova::compute::libvirt::qemu::memory_backing_dir: QemuMemoryBackingDir
               container_cpuset_cpus: ContainerCpusetCpus
+              nova_libvirt_opt_volumes: NovaLibvirtOptVolumes
             - values: {get_param: [RoleParameters]}
           - values:
               VhostuserSocketGroup: {get_param: VhostuserSocketGroup}
               QemuMemoryBackingDir: {get_param: QemuMemoryBackingDir}
               ContainerCpusetCpus: {get_param: ContainerCpusetCpus}
+              NovaLibvirtOptVolumes: {get_param: NovaLibvirtOptVolumes}
 
 
   ContainersCommon:
     type: ../containers-common.yaml
-
-  MySQLClient:
-    type: ../../deployment/database/mysql-client.yaml
 
   NovaLibvirtLogging:
     type: OS::TripleO::Services::Logging::NovaLibvirt
@@ -361,12 +385,15 @@ resources:
       RoleName: {get_param: RoleName}
       RoleParameters: {get_param: RoleParameters}
 
+
 outputs:
   role_data:
     description: Role data for the Libvirt service.
     value:
       service_name: nova_libvirt
       monitoring_subscription: {get_param: MonitoringSubscriptionNovaLibvirt}
+      global_config_settings:
+        use_tls_for_nbd: {get_param: UseTLSTransportForNbd}
       config_settings:
         map_merge:
           - get_attr: [NovaBase, role_data, config_settings]
@@ -423,6 +450,7 @@ outputs:
                 generate_service_certificates: true
                 tripleo::profile::base::nova::migration::client::libvirt_tls: true
                 tripleo::profile::base::nova::libvirt::tls_password: {get_param: [LibvirtTLSPassword]}
+                nova::compute::libvirt::qemu::default_tls_verify: {get_param: QemuDefaultTLSVerify}
                 nova::compute::libvirt::tls_priority: {get_param: LibvirtTLSPriority}
                 nova::migration::libvirt::listen_address:
                   str_replace:
@@ -470,6 +498,63 @@ outputs:
                         template: "libvirt/%{hiera('fqdn_NETWORK')}"
                         params:
                           NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
+                    key_size:
+                      if:
+                        - key_size_libvirtvnc_override_unset
+                        - {get_param: CertificateKeySize}
+                        - {get_param: LibvirtCertificateKeySize}
+                # create the qemu and qemu_ndb dirs and certs also when when tls for nbd
+                # is not enabled this allows us to enable it even at a later time without
+                # restart of instances
+                tripleo::certmonger::qemu_dirs::certificate_dir: '/etc/pki/qemu'
+                tripleo::certmonger::qemu_nbd_dirs::certificate_dir: '/etc/pki/libvirt-nbd'
+                tripleo::certmonger::ca::qemu::origin_ca_pem:
+                  if:
+                    - qemu_specific_ca_unset
+                    - get_param: InternalTLSQemuCAFile
+                    - get_param: QemuCACert
+                qemu_certificates_specs:
+                  qemu-server-cert:
+                    cacertfile:
+                      if:
+                        - qemu_ca_non_default
+                        - get_param: InternalTLSQemuCAFile
+                        - null
+                    service_certificate: '/etc/pki/qemu/server-cert.pem'
+                    service_key: '/etc/pki/qemu/server-key.pem'
+                    hostname:
+                      str_replace:
+                        template: "%{hiera('fqdn_NETWORK')}"
+                        params:
+                          NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
+                    principal:
+                      str_replace:
+                        template: "qemu/%{hiera('fqdn_NETWORK')}"
+                        params:
+                          NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
+                    key_size:
+                      if:
+                        - key_size_qemu_server_override_unset
+                        - {get_param: CertificateKeySize}
+                        - {get_param: QemuServerCertificateKeySize}
+                  qemu-nbd-client-cert:
+                    service_certificate: '/etc/pki/libvirt-nbd/client-cert.pem'
+                    service_key: '/etc/pki/libvirt-nbd/client-key.pem'
+                    hostname:
+                      str_replace:
+                        template: "%{hiera('fqdn_NETWORK')}"
+                        params:
+                          NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
+                    principal:
+                      str_replace:
+                        template: "qemu/%{hiera('fqdn_NETWORK')}"
+                        params:
+                          NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
+                    key_size:
+                      if:
+                        - key_size_qemu_client_override_unset
+                        - {get_param: CertificateKeySize}
+                        - {get_param: QemuClientCertificateKeySize}
               -
                 nova::migration::libvirt::live_migration_inbound_addr:
                   str_replace:
@@ -494,7 +579,7 @@ outputs:
                   libvirt-vnc-server-cert:
                     cacertfile:
                       if:
-                        - libvirt_vnc_specific_ca_unset
+                        - libvirt_vnc_ca_non_default
                         - get_param: InternalTLSVncCAFile
                         - null
                     service_certificate: '/etc/pki/libvirt-vnc/server-cert.pem'
@@ -509,6 +594,11 @@ outputs:
                         template: "libvirt-vnc/%{hiera('fqdn_NETWORK')}"
                         params:
                           NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
+                    key_size:
+                      if:
+                        - key_size_libvirtvnc_override_unset
+                        - {get_param: CertificateKeySize}
+                        - {get_param: LibvirtVNCServerCertificateKeySize}
               - {}
           -
             if:
@@ -516,60 +606,12 @@ outputs:
               -
                 nova::compute::libvirt::qemu::nbd_tls: true
                 nova::migration::libvirt::live_migration_with_native_tls: true
-                tripleo::certmonger::qemu_dirs::certificate_dir: '/etc/pki/qemu'
-                tripleo::certmonger::qemu_nbd_dirs::certificate_dir: '/etc/pki/libvirt-nbd'
-                generate_service_certificates: true
-                tripleo::certmonger::ca::qemu::origin_ca_pem:
-                  if:
-                    - qemu_specific_ca_unset
-                    - get_param: InternalTLSQemuCAFile
-                    - get_param: QemuCACert
-                qemu_certificates_specs:
-                  qemu-server-cert:
-                    cacertfile:
-                      if:
-                        - qemu_specific_ca_unset
-                        - get_param: InternalTLSQemuCAFile
-                        - null
-                    service_certificate: '/etc/pki/qemu/server-cert.pem'
-                    service_key: '/etc/pki/qemu/server-key.pem'
-                    hostname:
-                      str_replace:
-                        template: "%{hiera('fqdn_NETWORK')}"
-                        params:
-                          NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
-                    principal:
-                      str_replace:
-                        template: "qemu/%{hiera('fqdn_NETWORK')}"
-                        params:
-                          NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
-                  qemu-nbd-client-cert:
-                    cacertfile:
-                      if:
-                        - qemu_specific_ca_unset
-                        - get_param: InternalTLSQemuCAFile
-                        - null
-                    service_certificate: '/etc/pki/libvirt-nbd/client-cert.pem'
-                    service_key: '/etc/pki/libvirt-nbd/client-key.pem'
-                    hostname:
-                      str_replace:
-                        template: "%{hiera('fqdn_NETWORK')}"
-                        params:
-                          NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
-                    principal:
-                      str_replace:
-                        template: "qemu/%{hiera('fqdn_NETWORK')}"
-                        params:
-                          NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
               - {}
       puppet_config:
         config_volume: nova_libvirt
         puppet_tags: libvirtd_config,nova_config,file,libvirt_tls_password
-        step_config:
-          list_join:
-            - "\n"
-            - - include tripleo::profile::base::nova::libvirt
-              - {get_attr: [MySQLClient, role_data, step_config]}
+        step_config: |
+           include tripleo::profile::base::nova::libvirt
         config_image: {get_param: ContainerNovaLibvirtConfigImage}
       kolla_config:
         /var/lib/kolla/config_files/nova_libvirt.json:
@@ -590,22 +632,6 @@ outputs:
                   dest: "/etc/ceph/"
                   merge: true
                   preserve_properties: true
-              - if:
-                - use_tls_for_vnc
-                -
-                  - source: /var/lib/kolla/config_files/src-libvirt-vnc-pki/server-*.pem
-                    dest: /etc/pki/libvirt-vnc/
-                    merge: true
-                    preserve_properties: true
-                - null
-              - if:
-                - use_tls_for_nbd
-                -
-                  - source: /var/lib/kolla/config_files/src-libvirt-nbd-pki/client-*.pem
-                    dest: /etc/pki/libvirt-nbd/
-                    merge: true
-                    preserve_properties: true
-                - null
           permissions:
             list_concat:
               -
@@ -617,26 +643,6 @@ outputs:
                         USER: {get_param: CephClientUserName}
                   owner: nova:nova
                   perm: '0600'
-              - if:
-                - use_tls_for_vnc
-                -
-                  - path: /etc/pki/libvirt-vnc/server-key.pem
-                    owner: root:qemu
-                    perm: '0640'
-                - null
-              - if:
-                - use_tls_for_nbd
-                -
-                  - path: /etc/pki/libvirt-nbd/client-key.pem
-                    owner: root:qemu
-                    perm: '0640'
-                  - path: /etc/pki/qemu/server-key.pem
-                    owner: root:qemu
-                    perm: '0640'
-                  - path: /etc/pki/qemu/ca-cert.pem
-                    owner: root:root
-                    perm: '0644'
-                - null
         /var/lib/kolla/config_files/nova_virtlogd.json:
           command: /usr/sbin/virtlogd --config /etc/libvirt/virtlogd.conf
           config_files:
@@ -685,7 +691,7 @@ outputs:
                   - /dev:/dev
                   - /run:/run
                   - /sys/fs/cgroup:/sys/fs/cgroup
-                  - /var/run/libvirt:/var/run/libvirt:shared,z
+                  - /var/run/libvirt:/var/run/libvirt:shared
                   - /var/lib/libvirt:/var/lib/libvirt
                   - /etc/libvirt/qemu:/etc/libvirt/qemu:ro
                   - /var/log/libvirt/qemu:/var/log/libvirt/qemu
@@ -700,7 +706,10 @@ outputs:
             pid: host
             pids_limit: {get_param: ContainerNovaLibvirtPidsLimit}
             privileged: true
-            security_opt: label=disable
+            security_opt:
+              - label=level:s0
+              - label=type:spc_t
+              - label=filetype:container_share_t
             restart: always
             cpuset_cpus: {get_attr: [RoleParametersValue, value, container_cpuset_cpus]}
             depends_on:
@@ -711,6 +720,7 @@ outputs:
               list_concat:
                 - {get_attr: [ContainersCommon, volumes]}
                 - {get_attr: [NovaLibvirtLogging, volumes]}
+                - {get_attr: [RoleParametersValue, value, nova_libvirt_opt_volumes]}
                 -
                   - /etc/ssh/ssh_known_hosts:/etc/ssh/ssh_known_hosts:ro
                   - /var/lib/kolla/config_files/nova_libvirt.json:/var/lib/kolla/config_files/config.json:ro
@@ -722,44 +732,55 @@ outputs:
                   - /run:/run
                   - /sys/fs/cgroup:/sys/fs/cgroup
                   - /etc/libvirt:/etc/libvirt
-                  - /var/run/libvirt:/var/run/libvirt:shared,z
-                  - /var/lib/libvirt:/var/lib/libvirt:shared,z
+                  - /var/run/libvirt:/var/run/libvirt:shared
+                  - /var/cache/libvirt:/var/cache/libvirt:shared
+                  - /var/lib/libvirt:/var/lib/libvirt:shared
                   - /var/log/libvirt/qemu:/var/log/libvirt/qemu:ro
                   - /var/lib/vhost_sockets:/var/lib/vhost_sockets
                   - /var/lib/nova:/var/lib/nova:shared
-                -
-                  if:
-                    - docker_enabled
-                    -
-                      - /sys/fs/selinux:/sys/fs/selinux
-                    - null
+                  - /sys/fs/selinux:/sys/fs/selinux
+                  - /etc/selinux/config:/etc/selinux/config:ro
                 -
                   if:
                     - use_tls_for_live_migration
                     -
+                      - /etc/pki/libvirt:/etc/pki/libvirt/:ro
+                      - /etc/pki/libvirt-nbd:/etc/pki/libvirt-nbd:ro
                       - str_replace:
-                          template: "CACERT:/var/lib/kolla/config_files/src-tls/etc/pki/CA/cacert.pem:ro"
+                          template: "CACERT:/etc/pki/CA/cacert.pem:ro"
                           params:
                             CACERT:
                               if:
                                 - libvirt_specific_ca_unset
                                 - get_param: InternalTLSCAFile
                                 - get_param: LibvirtCACert
-                      - /etc/pki/libvirt/:/var/lib/kolla/config_files/src-tls/etc/pki/libvirt/:ro
+                      - str_replace:
+                          template: "CACERT:/etc/pki/qemu/ca-cert.pem:ro"
+                          params:
+                            CACERT:
+                              if:
+                                - libvirt_nbd_specific_ca_unset
+                                - get_param: InternalTLSNbdCAFile
+                                - get_param: LibvirtNbdCACert
+                      - /etc/pki/qemu/server-cert.pem:/etc/pki/qemu/server-cert.pem:ro
+                      - /etc/pki/qemu/server-key.pem:/etc/pki/qemu/server-key.pem:ro
+                      - /etc/pki/qemu/server-cert.pem:/etc/pki/qemu/client-cert.pem:ro
+                      - /etc/pki/qemu/server-key.pem:/etc/pki/qemu/client-key.pem:ro
                     - null
                 -
                   if:
                     - use_tls_for_vnc
                     -
+                      - /etc/pki/libvirt-vnc/server-cert.pem:/etc/pki/libvirt-vnc/server-cert.pem:ro
+                      - /etc/pki/libvirt-vnc/server-key.pem:/etc/pki/libvirt-vnc/server-key.pem:ro
                       - str_replace:
-                          template: "CACERT:/var/lib/kolla/config_files/src-tls/etc/pki/libvirt-vnc/ca-cert.pem:ro"
+                          template: "CACERT:/etc/pki/libvirt-vnc/ca-cert.pem:ro"
                           params:
                             CACERT:
                               if:
                                 - libvirt_vnc_specific_ca_unset
                                 - get_param: InternalTLSVncCAFile
                                 - get_param: LibvirtVncCACert
-                      - /etc/pki/libvirt-vnc:/var/lib/kolla/config_files/src-libvirt-vnc-pki:ro
                     - null
                 -
                   if:
@@ -769,22 +790,6 @@ outputs:
                           template: "MEMORY_BACKING_DIR:MEMORY_BACKING_DIR"
                           params:
                             MEMORY_BACKING_DIR: {get_attr: [RoleParametersValue, value, memory_backing_dir]}
-                    - null
-                -
-                  if:
-                    - use_tls_for_nbd
-                    -
-                      - str_replace:
-                          template: "CACERT:/var/lib/kolla/config_files/src-tls/etc/pki/qemu/ca-cert.pem:ro"
-                          params:
-                            CACERT:
-                              if:
-                                - libvirt_nbd_specific_ca_unset
-                                - get_param: InternalTLSNbdCAFile
-                                - get_param: LibvirtNbdCACert
-                      - /etc/pki/qemu/server-cert.pem:/var/lib/kolla/config_files/src-tls/etc/pki/qemu/server-cert.pem:ro
-                      - /etc/pki/qemu/server-key.pem:/var/lib/kolla/config_files/src-tls/etc/pki/qemu/server-key.pem:ro
-                      - /etc/pki/libvirt-nbd:/var/lib/kolla/config_files/src-libvirt-nbd-pki:ro
                     - null
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
@@ -804,8 +809,8 @@ outputs:
                     -
                       - /var/lib/config-data/puppet-generated/nova_libvirt/etc/nova:/etc/nova:ro
                       - /etc/libvirt:/etc/libvirt
-                      - /var/run/libvirt:/var/run/libvirt:shared,z
-                      - /var/lib/libvirt:/var/lib/libvirt:shared,z
+                      - /var/run/libvirt:/var/run/libvirt:shared
+                      - /var/lib/libvirt:/var/lib/libvirt:shared
                 command:
                   - /bin/bash
                   - -c
@@ -846,12 +851,13 @@ outputs:
               file:
                 path: "{{ item.path }}"
                 state: directory
-                setype: "{{ item.setype }}"
+                setype: "{{ item.setype | default(omit) }}"
               with_items:
                 - { 'path': /etc/libvirt, 'setype': svirt_sandbox_file_t }
                 - { 'path': /etc/libvirt/secrets, 'setype': svirt_sandbox_file_t }
                 - { 'path': /etc/libvirt/qemu, 'setype': svirt_sandbox_file_t }
                 - { 'path': /var/lib/libvirt, 'setype': svirt_sandbox_file_t }
+                - { 'path': /var/cache/libvirt }
                 - { 'path': /var/lib/nova, 'setype': svirt_sandbox_file_t }
                 - { 'path': /var/run/libvirt, 'setype': virt_var_run_t }
                 - { 'path': /var/log/libvirt, 'setype': svirt_sandbox_file_t }
@@ -915,18 +921,14 @@ outputs:
               - service: libvirt
                 network: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
                 type: node
+              - service: qemu
+                network: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
+                type: node
             - null
           - if:
             - use_tls_for_vnc
             -
               - service: libvirt-vnc
-                network: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
-                type: node
-            - null
-          - if:
-            - use_tls_for_nbd
-            -
-              - service: qemu
                 network: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
                 type: node
             - null

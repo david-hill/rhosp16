@@ -149,6 +149,12 @@ parameters:
       List of enabled Image Import Plugins. Valid values in the list are
       'image_conversion', 'inject_metadata', 'no_op'.
     type: comma_delimited_list
+  GlanceDiskFormats:
+    default: ''
+    description: >
+      List of allowed disk formats in Glance; all formats are allowed when
+      left unset.
+    type: comma_delimited_list
   GlanceImageConversionOutputFormat:
     default: 'raw'
     description: Desired output format for image conversion plugin.
@@ -182,6 +188,11 @@ parameters:
     description: >
       NFS mount options for NFS image import staging
     type: string
+  GlanceSparseUploadEnabled:
+    default: false
+    description: >
+      When using GlanceBackend 'file' and 'rbd' to enable or not sparse upload.
+    type: boolean
   KeystoneRegion:
     type: string
     default: 'regionOne'
@@ -194,7 +205,7 @@ parameters:
     type: json
   NotificationDriver:
     type: string
-    default: 'messagingv2'
+    default: 'noop'
     description: Driver or drivers to handle sending notifications.
   EnableInternalTLS:
     type: boolean
@@ -248,6 +259,12 @@ parameters:
           cinder_store:
             GlanceBackend: cinder
             GlanceStoreDescription: 'Cinder store'
+  GlanceCinderMountPointBase:
+    default: '/var/lib/glance/mnt'
+    type: string
+    description: |
+      The mount point base when glance is using cinder as store and cinder backend
+      is NFS. This mount point is where the NFS volume is mounted on the glance node.
   CephClientUserName:
     default: openstack
     type: string
@@ -283,6 +300,7 @@ conditions:
 
   fast_forward_upgrade: {not: {equals: [{get_param: ContainerGlanceApiImageStein},'']}}
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
+  glance_sparse_upload_enabled: {equals : [{get_param: GlanceSparseUploadEnabled}, true]}
   cinder_backend_enabled:
     or:
     - equals:
@@ -310,10 +328,13 @@ conditions:
           data: {get_param: GlanceMultistoreConfig}
       - true
   force_image_conversion_plugin:
-    and:
-      - rbd_backend_enabled
-      - equals: [{get_param: GlanceImageImportPlugins}, ['no_op']]
-      - equals: [{get_param: NovaEnableRbdBackend}, true]
+    or:
+      - and:
+        - rbd_backend_enabled
+        - equals: [{get_param: GlanceImageImportPlugins}, ['no_op']]
+        - equals: [{get_param: NovaEnableRbdBackend}, true]
+      - glance_sparse_upload_enabled
+
   use_tls_proxy: {equals : [{get_param: EnableInternalTLS}, true]}
   glance_workers_unset: {equals : [{get_param: GlanceWorkers}, '']}
   service_debug_unset: {equals : [{get_param: GlanceDebug}, '']}
@@ -459,6 +480,8 @@ outputs:
                     $NETWORK: {get_param: [ServiceNetMap, GlanceApiNetwork]}
             glance_notifier_strategy: {get_param: GlanceNotifierStrategy}
             glance_log_file: {get_param: GlanceLogFile}
+            glance::backend::rbd::rbd_thin_provisioning: {get_param: GlanceSparseUploadEnabled}
+            glance::backend::file::filesystem_thin_provisioning: {get_param: GlanceSparseUploadEnabled}
             glance::backend::swift::swift_store_auth_address: {get_param: [EndpointMap, KeystoneV3Internal, uri] }
             glance::backend::swift::swift_store_user: service:glance
             glance::backend::swift::swift_store_key: {get_param: GlancePassword}
@@ -489,6 +512,12 @@ outputs:
               glance::backend::cinder::cinder_store_project_name: 'service'
               glance::backend::cinder::cinder_store_user_name: 'glance'
               glance::backend::cinder::cinder_store_password: {get_param: GlancePassword}
+              tripleo::profile::base::glance::backend::cinder::cinder_mount_point_base: {get_param: GlanceCinderMountPointBase}
+            - {}
+          -
+            if:
+            - cinder_multipathd_enabled
+            - glance::backend::cinder::cinder_use_multipath: true
             - {}
           -
             if:
@@ -505,6 +534,11 @@ outputs:
               glance::api::filesystem_store_metadata_file: '/etc/glance/glance-metadata-file.json'
               glance::api::filesystem_store_file_perm: '0644'
             - {}
+          -
+            if:
+            - {equals: [{get_param: GlanceDiskFormats}, []]}
+            - {}
+            - glance::api::disk_formats: {get_param: GlanceDiskFormats}
           - glance::api::sync_db: false
       service_config_settings:
         mysql:
@@ -679,7 +713,7 @@ outputs:
             - if:
                 - internal_tls_enabled
                 - glance_api_tls_proxy:
-                    start_order: 2
+                    start_order: 3
                     image: *glance_api_image
                     net: host
                     user: root

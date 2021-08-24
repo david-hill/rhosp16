@@ -84,9 +84,13 @@ parameters:
       e.g. { cinder-context_is_admin: { key: context_is_admin, value: 'role:admin' } }
     default: {}
     type: json
+  CinderApiWsgiTimeout:
+    default: 60
+    description: The number of seconds until a Cinder API WSGI connection times out.
+    type: number
   NotificationDriver:
     type: string
-    default: 'messagingv2'
+    default: 'noop'
     description: Driver or drivers to handle sending notifications.
   RootStackName:
     description: The name of the stack/plan.
@@ -219,13 +223,18 @@ outputs:
                   "%{hiera('$NETWORK')}"
                 params:
                   $NETWORK: {get_param: [ServiceNetMap, CinderApiNetwork]}
-          -
             cinder::wsgi::apache::servername:
               str_replace:
                 template:
                   "%{hiera('fqdn_$NETWORK')}"
                 params:
                   $NETWORK: {get_param: [ServiceNetMap, CinderApiNetwork]}
+            cinder::wsgi::apache::vhost_custom_fragment:
+              str_replace:
+                template:
+                  "Timeout TIMEOUT"
+                params:
+                  TIMEOUT: {get_param: CinderApiWsgiTimeout}
           -
             if:
             - cinder_workers_zero
@@ -448,7 +457,7 @@ outputs:
             - { 'path': /var/log/containers/httpd/cinder-api, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
       external_upgrade_tasks:
         - when: step|int == 1
-          block:
+          block: &cinder_online_db_migration
             - name: Online data migration for Cinder
               command: "{{ container_cli }} exec cinder_api cinder-manage db online_data_migrations"
               delegate_to: "{{ groups['cinder_api'][0] }}"
@@ -470,7 +479,19 @@ outputs:
                   - cinder_api
                   - cinder_api_cron
                 tripleo_delegate_to: "{{ groups['cinder_api'] | default([]) }}"
+      external_update_tasks:
+        - when: step|int == 1
+          block: *cinder_online_db_migration
       external_deploy_tasks:
+        - name: Clean up legacy Cinder keystone catalog entries
+          become: true
+          os_keystone_service:
+            cloud: {get_param: RootStackName}
+            name: cinderv3
+            service_type: volume
+            state: absent
+          when:
+            - step|int == 4
         - name: Manage Cinder Volume Type
           become: true
           vars:

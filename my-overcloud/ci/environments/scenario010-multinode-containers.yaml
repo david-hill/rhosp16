@@ -11,7 +11,6 @@ resource_registry:
   OS::TripleO::Services::Clustercheck: ../../deployment/pacemaker/clustercheck-container-puppet.yaml
   OS::TripleO::Services::MySQL: ../../deployment/database/mysql-pacemaker-puppet.yaml
   OS::TripleO::Services::Keepalived: OS::Heat::None
-  OS::TripleO::AllNodes::Validation: ../common/all-nodes-validation-disabled.yaml
   OS::TripleO::Services::OctaviaApi: ../../deployment/octavia/octavia-api-container-puppet.yaml
   OS::TripleO::Services::OctaviaHousekeeping: ../../deployment/octavia/octavia-housekeeping-container-puppet.yaml
   OS::TripleO::Services::OctaviaHealthManager: ../../deployment/octavia/octavia-health-manager-container-puppet.yaml
@@ -107,7 +106,7 @@ parameter_defaults:
   # a production deployment. What is here is suitable for
   # developer and CI testing only.
   CephClusterFSID: '4b5c8c0a-ff60-454b-a1b4-9747aa737d19'
-  CephAnsibleRepo: "tripleo-centos-ceph-nautilus"
+  CephAnsibleRepo: "rhceph-4-tools-for-rhel-8-x86_64-rpms"
   CephClusterName: mycephcluster
   CephClientKey: 'AQC+vYNXgDAgAhAAc8UoYt+OTz5uhV7ItLdwUw=='
   NovaEnableRbdBackend: true

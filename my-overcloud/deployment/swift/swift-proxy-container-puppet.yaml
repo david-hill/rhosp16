@@ -82,6 +82,14 @@ parameters:
   EnableInternalTLS:
     type: boolean
     default: false
+  MemcachedTLS:
+    default: false
+    description: Set to True to enable TLS on Memcached service.
+                 Because not all services support Memcached TLS, during the
+                 migration period, Memcached will listen on 2 ports - on the
+                 port set with MemcachedPort parameter (above) and on 11211,
+                 without TLS.
+    type: boolean
   SwiftCorsAllowedOrigin:
     type: string
     default: ''
@@ -267,6 +275,7 @@ outputs:
                     "%{hiera('$NETWORK')}"
                   params:
                     $NETWORK: {get_param: [ServiceNetMap, SwiftProxyNetwork]}
+            swift::proxy::cache::tls_enabled: {get_param: MemcachedTLS}
       # BEGIN DOCKER SETTINGS
       puppet_config:
         config_volume: swift
@@ -417,6 +426,7 @@ outputs:
             - if:
                 - internal_tls_enabled
                 - swift_proxy_tls_proxy:
+                    start_order: 3
                     image: *swift_proxy_image
                     net: host
                     user: root
@@ -467,6 +477,16 @@ outputs:
               when:
                 - rsyslog_config is changed
                 - rsyslog_config.rc == 0
+        - name: Run kolla_set_configs to copy ring files
+          when: step|int == 5
+          shell: "{{ container_cli }} exec -u root {{ item }} /usr/local/bin/kolla_set_configs "
+          become: true
+          register: kolla_set_configs_result
+          failed_when:
+            - kolla_set_configs_result.rc is defined  # do not fail in dry run mode
+            - kolla_set_configs_result.rc not in [0, 125]  # ignore containers that are not running
+          with_items:
+            - swift_proxy
       update_tasks:
         - name: Check swift containers log folder/symlink exists
           stat:
@@ -479,3 +499,18 @@ outputs:
           when: swift_log_link.stat.islnk is defined and swift_log_link.stat.islnk
       metadata_settings:
         get_attr: [TLSProxyBase, role_data, metadata_settings]
+      external_upgrade_tasks:
+        - when:
+            - step|int == 1
+          tags:
+            - never
+            - system_upgrade_transfer_data
+            - system_upgrade_stop_services
+          block:
+            - name: Stop swift-proxy container
+              import_role:
+                name: tripleo-container-stop
+              vars:
+                tripleo_containers_to_stop:
+                  - swift-proxy
+                tripleo_delegate_to: "{{ groups['swift_proxy'] | default([]) }}"
