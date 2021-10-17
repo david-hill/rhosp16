@@ -45,6 +45,16 @@ parameters:
   EnableInternalTLS:
     type: boolean
     default: false
+  CertificateKeySize:
+    type: string
+    default: '2048'
+    description: Specifies the private key size used when creating the
+                 certificate.
+  CephCertificateKeySize:
+    type: string
+    default: ''
+    description: Override the private key size used when creating the
+                 certificate for this service
 
 conditions:
   dashboard_enabled: {equals: [{get_param: CephEnableDashboard}, true]}
@@ -54,6 +64,7 @@ conditions:
       - equals:
           - get_param: EnableInternalTLS
           - true
+  key_size_override_unset: {equals: [{get_param: CephCertificateKeySize}, '']}
 
 resources:
   CephBase:
@@ -79,8 +90,12 @@ resources:
           dashboard_rgw_api_scheme: {get_param: [EndpointMap, CephRgwInternal, protocol]}
           dashboard_rgw_api_no_ssl_verify: false
           dashboard_port: 8444
-          dashboard_frontend_vip: {get_param: [EndpointMap, CephDashboardInternal, host]}
           dashboard_admin_user_ro: {get_param: CephDashboardAdminRO}
+          dashboard_protocol:
+            if:
+              - internal_tls_enabled
+              - 'https'
+              - 'http'
 
 outputs:
   role_data:
@@ -98,7 +113,10 @@ outputs:
         - {get_attr: [CephBase, role_data, external_deploy_tasks]}
         - - name: ceph_mgr_external_deploy_init
             when: step|int == 1
-            tags: ceph
+            tags:
+              - ceph
+              - ceph_fstobs
+              - ceph_systemd
             block:
               - name: set ceph-ansible group vars mgrs
                 set_fact:
@@ -137,6 +155,11 @@ outputs:
                     params:
                       NETWORK: {get_param: [ServiceNetMap, CephDashboardNetwork]}
                 postsave_cmd: "/usr/bin/certmonger-dashboard-refresh.sh"
+                key_size:
+                  if:
+                    - key_size_override_unset
+                    - {get_param: CertificateKeySize}
+                    - {get_param: CephCertificateKeySize}
             - {}
           - tripleo::ceph_mgr::firewall_rules:
               '113 ceph_mgr':

@@ -36,8 +36,24 @@ if [ x"${TRIPLEO_MINOR_UPDATE,,}" != x"true" ]; then
         # have been updated on all nodes. So we need to run pcs only
         # once (e.g. on the service's boostrap node).
         if bundle_can_be_restarted ${BUNDLE_NAME}; then
-            echo "$(date -u): Restarting ${BUNDLE_NAME} globally"
-            /usr/bin/bootstrap_host_exec $TRIPLEO_SERVICE /sbin/pcs resource restart --wait=__PCMKTIMEOUT__ $BUNDLE_NAME
+            HOSTNAME=$(/bin/hostname -s)
+            SERVICE_NODEID=$(/bin/hiera -c /etc/puppet/hiera.yaml "${TRIPLEO_SERVICE}_short_bootstrap_node_name")
+            if [[ "${HOSTNAME,,}" == "${SERVICE_NODEID,,}" ]]; then
+                replicas_running=$(crm_resource -Q -r $BUNDLE_NAME --locate 2>&1 | wc -l)
+                if [ "$replicas_running" != "0" ]; then
+                    echo "$(date -u): Restarting ${BUNDLE_NAME} globally. Stopping:"
+                    /sbin/pcs resource disable --wait=__PCMKTIMEOUT__ $BUNDLE_NAME
+                    echo "$(date -u): Restarting ${BUNDLE_NAME} globally. Starting:"
+                    /sbin/pcs resource enable --wait=__PCMKTIMEOUT__ $BUNDLE_NAME
+                else
+                    echo "$(date -u): ${BUNDLE_NAME} is not running anywhere," \
+                         "cleaning up to restart it globally if necessary"
+                    /sbin/pcs resource cleanup $BUNDLE_NAME
+                fi
+            else
+                echo "$(date -u): Skipping global restart of ${BUNDLE_NAME} on ${HOSTNAME} it will be restarted by node ${SERVICE_NODEID}"
+            fi
+
         else
             echo "$(date -u): No global restart needed for ${BUNDLE_NAME}."
         fi

@@ -218,9 +218,10 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
             - { 'path': /var/log/containers/mistral, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
-            - { 'path': /var/lib/mistral, 'setype': svirt_sandbox_file_t }
+            - { 'path': /var/lib/mistral, 'setype': svirt_sandbox_file_t, 'mode': '0751' }
         - name: create mistral/.ssh directory
           file:
             path: /var/lib/mistral/.ssh

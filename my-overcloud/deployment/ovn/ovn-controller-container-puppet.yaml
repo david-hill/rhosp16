@@ -58,6 +58,19 @@ parameters:
     default: "datacentre:br-ex"
     tags:
       - role_specific
+  OVNEncapType:
+    description: >
+      Type of encapsulation used in OVN. It can be "geneve" or "vxlan".
+    type: string
+    default: "geneve"
+    constraints:
+      - allowed_values: ["geneve", "vxlan"]
+  EnableVLANTransparency:
+    default: false
+    description: >
+        If True, then allow plugins that support it to create VLAN
+        transparent networks.
+    type: boolean
   OVNIntegrationBridge:
     description: >
       Name of the OVS bridge to use as integration bridge by OVN Controller.
@@ -98,10 +111,29 @@ parameters:
       OpenvSwitch integration bridge, in seconds.
     type: number
     default: 60
+  DockerInsecureRegistryAddress:
+    description: Optional. The IP Address and Port of an insecure docker
+                 namespace that will be configured in /etc/sysconfig/docker.
+                 The value can be multiple addresses separated by commas.
+    type: comma_delimited_list
+    default: []
+  CertificateKeySize:
+    type: string
+    default: '2048'
+    description: Specifies the private key size used when creating the
+                 certificate.
+  ContainerOvnCertificateKeySize:
+    type: string
+    default: ''
+    description: Override the private key size used when creating the
+                 certificate for this service
 
 conditions:
   force_config_drive:  {equals: [{get_param: OVNMetadataEnabled}, false]}
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
+  insecure_registry_is_empty: {equals : [{get_param: DockerInsecureRegistryAddress}, []]}
+  key_size_override_unset: {equals: [{get_param: ContainerOvnCertificateKeySize}, '']}
+  enable_vlan_transparency: {equals: [{get_param: EnableVLANTransparency}, true]}
 
 resources:
 
@@ -141,6 +173,7 @@ outputs:
                    "%{hiera('$NETWORK')}"
                  params:
                    $NETWORK: {get_param: [ServiceNetMap, NeutronTenantNetwork]}
+            ovn::controller::ovn_encap_type: {get_param: OVNEncapType}
             ovn::controller::ovn_bridge: {get_param: OVNIntegrationBridge}
             ovn::controller::hostname: "%{hiera('fqdn_canonical')}"
             ovn::controller::ovn_remote_probe_interval: {get_param: OVNRemoteProbeInterval}
@@ -174,6 +207,16 @@ outputs:
                     template: "ovn_controller/%{hiera('fqdn_NETWORK')}"
                     params:
                       NETWORK: {get_param: [ServiceNetMap, OvnDbsNetwork]}
+                key_size:
+                  if:
+                    - key_size_override_unset
+                    - {get_param: CertificateKeySize}
+                    - {get_param: ContainerOvnCertificateKeySize}
+            - {}
+          -
+            if:
+            - enable_vlan_transparency
+            - vswitch::ovs::vlan_limit: 0
             - {}
       service_config_settings: {}
       # BEGIN DOCKER SETTINGS
@@ -228,7 +271,7 @@ outputs:
             net: host
             privileged: true
             user: root
-            command: ['/bin/bash', '-c', 'CMS_OPTS=$(hiera ovn::controller::ovn_cms_options -c /etc/puppet/hiera.yaml);  if [ X"$CMS_OPTS" !=  X ]; then ovs-vsctl set open . external_ids:ovn-cms-options=$CMS_OPTS; fi']
+            command: ['/bin/bash', '-c', 'CMS_OPTS=$(hiera ovn::controller::ovn_cms_options -c /etc/puppet/hiera.yaml);  if [ X"$CMS_OPTS" !=  X ]; then ovs-vsctl set open . external_ids:ovn-cms-options=$CMS_OPTS;else ovs-vsctl remove open . external_ids ovn-cms-options; fi']
             image: &ovn_controller_image {get_param: ContainerOvnControllerImage}
             volumes:
               list_concat:
@@ -245,6 +288,8 @@ outputs:
             privileged: true
             user: root
             restart: always
+            depends_on:
+              - openvswitch.service
             healthcheck:
               test:
                 list_join:
@@ -285,6 +330,7 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
             - { 'path': /var/log/containers/openvswitch, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/lib/openvswitch/ovn, 'setype': svirt_sandbox_file_t }
@@ -293,4 +339,132 @@ outputs:
             name: virt_sandbox_use_netlink
             persistent: yes
             state: yes
-      upgrade_tasks: []
+        - name: Copy in cleanup script
+          copy:
+            content: {get_file: ../neutron/neutron-cleanup}
+            dest: '/usr/libexec/neutron-cleanup'
+            force: yes
+            mode: '0755'
+        - name: Copy in cleanup service
+          copy:
+            content: {get_file: ../neutron/neutron-cleanup.service}
+            dest: '/usr/lib/systemd/system/neutron-cleanup.service'
+            force: yes
+        - name: Enabling the cleanup service
+          service:
+            name: neutron-cleanup
+            enabled: yes
+      upgrade_tasks:
+        # system_upgrade
+        - name: ovn_controller system_upgrade_prepare step 1
+          tags:
+            - never
+            - system_upgrade
+            - system_upgrade_prepare
+          when:
+            - step|int == 1
+          block:
+            - name: Check ovn_controller is running in docker
+              shell: |
+                docker ps | grep ovn_controller
+              register: ovn_controller_running
+              failed_when: false
+            - name: Disable autorestart on ovn_controller container
+              command: docker update --restart=no ovn_controller
+              when: ovn_controller_running.rc == 0
+            - name: Tell ovn_controller to clean up and stop
+              shell: |
+                docker exec -u root ovn_controller bash -c "if [ -f /usr/bin/ovn-appctl ] ; then ovn-appctl -t ovn-controller exit ; else ovs-appctl -t ovn-controller exit ; fi"
+              when: ovn_controller_running.rc == 0
+        # nova_hybrid_state
+        - name: Gather missing facts
+          setup:
+            gather_subset: "distribution"
+          when: >-
+            ansible_facts['distribution'] is not defined or
+            ansible_facts['distribution_major_version'] is not defined
+          tags:
+            - never
+            - nova_hybrid_state
+        - name: Switch ovn-controller to hybrid state
+          vars:
+            ovn_controller_image: {get_param: ContainerOvnControllerImage}
+            ovn_interaction_bridge: {get_param: OVNIntegrationBridge}
+          tags:
+            - never
+            - nova_hybrid_state
+          when:
+            - step|int == 0
+            - ansible_facts['distribution'] == 'RedHat'
+            - ansible_facts['distribution_major_version'] is version('7', '==')
+          block:
+            - name: Check if ovn_controller is runing with proper image
+              shell:
+                docker ps | grep "{{ovn_controller_image}}"
+              failed_when: false
+              register: hybrid_ovn_controller
+            - name: Implement the hybrid state for ovn_controller
+              when: hybrid_ovn_controller.rc != 0
+              block:
+                - name: Update the ovn_controller paunch image in config
+                  shell: |
+                    set -o pipefail
+                    jq '.ovn_controller.image = "{{ ovn_controller_image }}" |
+                        .ovn_controller.volumes += ["/var/lib/openvswitch/ovn:/run/ovn:shared,z", "/var/log/containers/openvswitch:/var/log/ovn:z"] |
+                        {"ovn_controller": .ovn_controller }' \
+                    /var/lib/tripleo-config/docker-container-startup-config-step_4.json >\
+                    /var/lib/tripleo-config/docker-container-hybrid_ovn_controller.json
+                - name: Make sure the Undercloud hostname is included in /etc/hosts
+                  when:
+                    - undercloud_hosts_entries is defined
+                  lineinfile:
+                    dest: /etc/hosts
+                    line: "{{ undercloud_hosts_entries | join('') }}"
+                    state: present
+                - name: Set container_registry_insecure_registries fact.
+                  set_fact:
+                    container_registry_insecure_registries:
+                      if:
+                        - insecure_registry_is_empty
+                        - []
+                        - {get_param: DockerInsecureRegistryAddress}
+                - name: Set container_registry_insecure registries
+                  when: container_registry_insecure_registries != []
+                  shell: crudini --set /etc/containers/registries.conf registries.insecure registries "[{{ container_registry_insecure_registries | map('regex_replace', '(.*)', "'\1'") | join(',') }}]"
+                - name: Restart docker and apply the paunch config
+                  when: container_registry_insecure_registries != []
+                  shell: |
+                    set -o pipefail
+                    # Get list of running containers
+                    RUNNING="$( docker ps --format '{{ '{{' }}.Names{{ '}}' }}' )"
+                    # Restart docker
+                    systemctl restart docker
+                    # Compare running containers now vs before
+                    TO_STOP="$(grep -v -f <(echo "${RUNNING}")  <(docker ps --format '{{ '{{' }}.Names{{ '}}' }}'))"
+                    # Check if we need to stop anything and stop it
+                    if [ -n "${TO_STOP}" ]; then
+                      echo "${TO_STOP}" | xargs -r docker stop
+                    fi
+                  args:
+                    executable: /usr/bin/bash
+                - name: Remove ovn_controller container before applying new paunch config
+                  docker_container:
+                    name: ovn_controller
+                    state: absent
+                - name: Apply paunch config if insecure registries are empty
+                  shell: |
+                    paunch apply --file /var/lib/tripleo-config/docker-container-hybrid_ovn_controller.json --config-id hybrid_ovn_controller
+            - name: Get ovn remote setting
+              shell: |
+                ovs-vsctl get open . external_ids:ovn-remote
+              register: ovn_remote
+            - name: Set fact - OVN SB connection string
+              set_fact:
+                ovn_sb_conn_str: "{{ [enable_internal_tls | bool | ternary('ssl','tcp'), ovn_dbs_vip | ipwrap, service_configs['ovn::southbound::port']] | join(':') }}"
+            - name: Set new ovn remote setting
+              shell: |
+                ovs-vsctl set open . external_ids:ovn-remote="{{ ovn_sb_conn_str }}"
+              when: ovn_sb_conn_str not in ovn_remote.stdout
+            - name: Update OVNIntegrationBridge protocols to OpenFlow13,OpenFlow15
+              shell: |
+                ovs-vsctl set bridge {{ ovn_interaction_bridge }} protocols="OpenFlow13,OpenFlow15"

@@ -1,6 +1,21 @@
+- name: Gather facts needed by role if necessary
+  setup:
+    gather_subset: "!min,python"
+  when: ansible_facts['python'] is not defined
+  tags:
+    - container_config_tasks
+
+- name: set python_cmd if necessary
+  set_fact:
+    python_cmd: "python{{ ansible_facts.python.version.major }}"
+    cacheable: true
+  when: python_cmd is not defined
+  tags:
+    - container_config_tasks
+
 - name: Block for container-puppet tasks (generate config) during step 1 with paunch
   when:
-    - enable_paunch|default(true)
+    - enable_paunch|bool
   tags:
     - container_config
   block:
@@ -20,7 +35,7 @@
         MOUNT_HOST_PUPPET: '{{docker_puppet_mount_host_puppet | default(true)}}'
         CONTAINER_LOG_STDOUT_PATH: "{{ container_log_stdout_path }}"
         CONTAINER_HEALTHCHECK_DISABLED: "{{ container_healthcheck_disabled }}"
-        SHORT_HOSTNAME: "{{ ansible_hostname | lower }}"
+        SHORT_HOSTNAME: "{{ ansible_facts['hostname'] | lower }}"
       check_mode: no
       register: generate_config_async_result
 
@@ -31,6 +46,8 @@
       until: generate_config_outputs.finished
       retries: 1200
       delay: 3
+      when:
+        - not (ansible_check_mode | bool)
 
     - name: "Debug output for task: Run container-puppet tasks (generate config) during step 1"
       debug:
@@ -42,7 +59,8 @@
 
 - name: Block for container-puppet tasks (generate config) during step {{ step }} with tripleo-ansible
   when:
-    - not enable_paunch|default(true)
+    - not (enable_paunch|bool)
+  become: true
   tags:
     - container_config
   block:
@@ -61,7 +79,7 @@
         net_host: true
         no_archive: false
         puppet_config: "/var/lib/container-puppet/{{ ansible_check_mode | bool | ternary('check-mode/', '') }}container-puppet.json"
-        short_hostname: "{{ ansible_hostname | lower }}"
+        short_hostname: "{{ ansible_facts['hostname'] | lower }}"
         step: "{{ step }}"
 
     - name: "Manage Puppet containers (generate config) for step {{ step }} with tripleo-ansible"
@@ -81,6 +99,7 @@
         tripleo_container_manage_valid_exit_code: [0, 2]
 
 - name: Diff puppet-generated changes for check mode
+  become: true
   shell: |
     diff -ruN --no-dereference -q /var/lib/config-data/puppet-generated /var/lib/config-data/check-mode/puppet-generated
     diff -ruN --no-dereference /var/lib/config-data/puppet-generated /var/lib/config-data/check-mode/puppet-generated

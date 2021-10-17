@@ -79,7 +79,7 @@ parameters:
     description: NFS share to be mounted
     type: string
   CinderBackupNfsMountOptions:
-    default: ''
+    default: 'context=system_u:object_r:container_file_t:s0'
     description: Mount options passed to the NFS client. See NFS man
                  page for details.
     type: string
@@ -165,6 +165,11 @@ outputs:
               dest: "/etc/iscsi/"
               merge: true
               preserve_properties: true
+            - source: "/var/lib/kolla/config_files/src-tls/*"
+              dest: "/"
+              merge: true
+              preserve_properties: true
+              optional: true
           permissions:
             - path: /var/lib/cinder
               owner: cinder:cinder
@@ -180,6 +185,10 @@ outputs:
                     USER: {get_param: CephClientUserName}
               owner: cinder:cinder
               perm: '0600'
+            - path: /etc/pki/tls/certs/etcd.crt
+              owner: cinder:cinder
+            - path: /etc/pki/tls/private/etcd.key
+              owner: cinder:cinder
       docker_config:
         step_3:
           cinder_backup_init_logs:
@@ -209,3 +218,18 @@ outputs:
                 name: virt_sandbox_use_netlink
                 persistent: yes
                 state: yes
+      external_upgrade_tasks:
+        - when:
+            - step|int == 1
+          tags:
+            - never
+            - system_upgrade_transfer_data
+            - system_upgrade_stop_services
+          block:
+            - name: Stop cinder backup container
+              import_role:
+                name: tripleo-container-stop
+              vars:
+                tripleo_containers_to_stop:
+                  - cinder_backup
+                tripleo_delegate_to: "{{ groups['cinder_backup'] | default([]) }}"

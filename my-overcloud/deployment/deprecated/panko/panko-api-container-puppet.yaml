@@ -101,6 +101,11 @@ parameters:
     description: >
         Cron to delete events from db - Week Day
     default: '*'
+  PankoExpirerBatchSize:
+    type: number
+    description: >
+        Limit number of deleted events in single purge run
+    default: 500
 
 conditions:
   service_debug_unset: {equals : [{get_param: PankoDebug}, '']}
@@ -204,6 +209,7 @@ outputs:
             panko::expirer::monthday: {get_param: PankoExpirerMonthday}
             panko::expirer::month: {get_param: PankoExpirerMonth}
             panko::expirer::weekday: {get_param: PankoExpirerWeekday}
+            panko::expirer::events_delete_batch_size: {get_param: PankoExpirerBatchSize}
       service_config_settings:
         keystone:
           panko::keystone::auth::public_url: {get_param: [EndpointMap, PankoPublic, uri]}
@@ -221,6 +227,17 @@ outputs:
             - '%'
             - "%{hiera('mysql_bind_host')}"
       # BEGIN DOCKER SETTINGS #
+      keystone_resources:
+        panko:
+          endpoints:
+            public: {get_param: [EndpointMap, PankoPublic, uri]}
+            internal: {get_param: [EndpointMap, PankoInternal, uri]}
+            admin: {get_param: [EndpointMap, PankoAdmin, uri]}
+          users:
+            panko:
+              password: {get_param: PankoPassword}
+          region: {get_param: KeystoneRegion}
+          service: 'event'
       puppet_config:
         config_volume: panko
         puppet_tags: panko_api_paste_ini,panko_config

@@ -76,7 +76,7 @@ parameters:
       MysqlNetwork: {{ _service_nets.get('internal_api', 'ctlplane') }}
       SnmpdNetwork: ctlplane
       CephClusterNetwork: {{ _service_nets.get('storage_mgmt', 'ctlplane') }}
-      CephDashboardNetwork: ctlplane
+      CephDashboardNetwork: {{ _service_nets.get('storage', 'ctlplane') }}
       CephGrafanaNetwork: {{ _service_nets.get('storage', 'ctlplane') }}
       CephMonNetwork: {{ _service_nets.get('storage', 'ctlplane') }}
       CephRgwNetwork: {{ _service_nets.get('storage', 'ctlplane') }}
@@ -99,7 +99,11 @@ parameters:
       {{role.name}}HostnameResolveNetwork: {{ _service_nets.get('storage', 'ctlplane') }}
 {%- endfor %}
 {%- for role in roles if not role.name.startswith('Ceph') %}
+    {%- if 'InternalApi' in role.networks %}
       {{role.name}}HostnameResolveNetwork: {{ _service_nets.get('internal_api', 'ctlplane') }}
+    {%- else %}
+      {{role.name}}HostnameResolveNetwork: ctlplane
+    {%- endif %}
 {%- endfor %}
       # special-case for MetricsQdrNetwork, which will vary depending on role
 {%- for role in roles if role.name == 'CephStorage' or role.name == 'BlockStorage' or role.name == 'ObjectStorage' %}

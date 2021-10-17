@@ -4,6 +4,10 @@ description: >
   OpenStack containerized Nova Conductor service
 
 parameters:
+  ContainerNovaConductorImageStein:
+    description: image
+    type: string
+    default: ''
   ContainerNovaConductorImage:
     description: image
     type: string
@@ -64,9 +68,15 @@ parameters:
     type: boolean
     tags:
       - role_specific
+  NovaAdditionalCell:
+    default: false
+    description: Whether this is an cell additional to the default cell.
+    type: boolean
 
 conditions:
+  fast_forward_upgrade: {not: {equals: [{get_param: ContainerNovaConductorImageStein},'']}}
   nova_workers_zero: {equals : [{get_param: NovaWorkers}, 0]}
+  is_not_additional_cell: {equals: [{get_param: NovaAdditionalCell}, false]}
 
 resources:
 
@@ -92,6 +102,26 @@ resources:
       RoleName: {get_param: RoleName}
       RoleParameters: {get_param: RoleParameters}
 
+  NovaApiDBClient:
+    type: ./nova-apidb-client-puppet.yaml
+    properties:
+      ServiceData: {get_param: ServiceData}
+      ServiceNetMap: {get_param: ServiceNetMap}
+      DefaultPasswords: {get_param: DefaultPasswords}
+      EndpointMap: {get_param: EndpointMap}
+      RoleName: {get_param: RoleName}
+      RoleParameters: {get_param: RoleParameters}
+
+  NovaDBClient:
+    type: ./nova-db-client-puppet.yaml
+    properties:
+      ServiceData: {get_param: ServiceData}
+      ServiceNetMap: {get_param: ServiceNetMap}
+      DefaultPasswords: {get_param: DefaultPasswords}
+      EndpointMap: {get_param: EndpointMap}
+      RoleName: {get_param: RoleName}
+      RoleParameters: {get_param: RoleParameters}
+
   RoleParametersValue:
     type: OS::Heat::Value
     properties:
@@ -103,7 +133,6 @@ resources:
             - values: {get_param: [RoleParameters]}
           - values:
               NovaEnableNUMALiveMigration: {get_param: NovaEnableNUMALiveMigration}
-
 outputs:
   role_data:
     description: Role data for the Nova Conductor service.
@@ -114,6 +143,10 @@ outputs:
         map_merge:
           - {get_attr: [NovaBase, role_data, config_settings]}
           - {get_attr: [NovaLogging, config_settings]}
+          # FIXME(owalsh): NovaApiDBClient should be conditional on is_not_additional_cell
+          # however cell conductor currently requires api db access for affinity checks
+          - {get_attr: [NovaApiDBClient, role_data, config_settings]}
+          - {get_attr: [NovaDBClient, role_data, config_settings]}
           - {get_attr: [RoleParametersValue, value]}
           -
             if:
@@ -126,14 +159,10 @@ outputs:
             - {get_param: NovaConductorLoggingSource}
         mysql:
           map_merge:
-          - {get_attr: [NovaBase, role_data, service_config_settings, mysql]}
-          - nova::db::mysql::password: {get_param: NovaPassword}
-            nova::db::mysql::user: nova
-            nova::db::mysql::host: {get_param: [EndpointMap, MysqlCellInternal, host_nobrackets]}
-            nova::db::mysql::dbname: nova
-            nova::db::mysql::allowed_hosts:
-              - '%'
-              - "%{hiera('mysql_bind_host')}"
+            # FIXME(owalsh): NovaApiDBClient should be conditional on is_not_additional_cell
+            # however cell conductor currently requires api db access for affinity checks
+            - get_attr: [NovaApiDBClient, role_data, service_config_settings, mysql]
+            - get_attr: [NovaDBClient, role_data, service_config_settings, mysql]
       # BEGIN DOCKER SETTINGS
       puppet_config:
         config_volume: nova
@@ -160,26 +189,62 @@ outputs:
             - path: /var/log/nova
               owner: nova:nova
               recurse: true
+      container_config_scripts:
+        map_merge:
+          - {get_attr: [ContainersCommon, container_config_scripts]}
+          - nova_ffu_db_sync.sh:
+              mode: "0755"
+              content: { get_file: ../../container_config_scripts/nova_ffu_db_sync.sh }
       docker_config:
         step_2:
           get_attr: [NovaLogging, docker_config, step_2]
         step_3:
-          nova_db_sync:
-            image: &nova_conductor_image {get_param: ContainerNovaConductorImage}
-            start_order: 3 # Runs after nova-api tasks if installed on this host
-            net: host
-            detach: false
-            volumes: &nova_conductor_bootstrap_volumes
-              list_concat:
-                - {get_attr: [ContainersCommon, volumes]}
-                - {get_attr: [NovaLogging, volumes]}
-                -
-                  - /var/lib/config-data/nova/etc/my.cnf.d/tripleo.cnf:/etc/my.cnf.d/tripleo.cnf:ro
-                  - /var/lib/config-data/nova/etc/nova/:/etc/nova/:ro
-            user: root
-            command: "/usr/bin/bootstrap_host_exec nova_conductor su nova -s /bin/bash -c '/usr/bin/nova-manage db sync'"
-            environment:
-              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+          map_merge:
+            - nova_db_sync:
+                image: &nova_conductor_image {get_param: ContainerNovaConductorImage}
+                start_order: 6 # Runs after nova-api tasks if installed on this host
+                net: host
+                detach: false
+                volumes: &nova_conductor_bootstrap_volumes
+                  list_concat:
+                    - {get_attr: [ContainersCommon, volumes]}
+                    - {get_attr: [NovaLogging, volumes]}
+                    -
+                      - /var/lib/config-data/nova/etc/my.cnf.d/tripleo.cnf:/etc/my.cnf.d/tripleo.cnf:ro
+                      - /var/lib/config-data/nova/etc/nova/:/etc/nova/:ro
+                user: root
+                command:
+                  str_replace:
+                    template: "/usr/bin/bootstrap_host_exec nova_conductor su nova -s /bin/bash -c '/usr/bin/nova-manage db sync DB_SYNC_ARGS'"
+                    params:
+                      if:
+                        - is_not_additional_cell
+                        - DB_SYNC_ARGS: ""
+                        - DB_SYNC_ARGS: "--local_cell"
+
+                environment:
+                  TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+            - if:
+                - fast_forward_upgrade
+                - nova_db_sync_stein:
+                    image: {get_param: ContainerNovaConductorImageStein}
+                    start_order: 1 # Runs after nova-api db sync Stein
+                    net: host
+                    detach: false
+                    volumes:
+                      list_concat:
+                        - *nova_conductor_bootstrap_volumes
+                        -
+                          - /var/lib/container-config-scripts/:/container-config-scripts/:ro
+                    user: root
+                    command:
+                      - '/usr/bin/bootstrap_host_exec'
+                      - 'nova_conductor'
+                      - '/container-config-scripts/nova_ffu_db_sync.sh'
+                      - 'db'
+                    environment:
+                      TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+                - {}
         step_4:
           nova_conductor:
             image: *nova_conductor_image
@@ -199,6 +264,7 @@ outputs:
       deploy_steps_tasks:
         - name: validate nova conductor container state
           when:
+            - not (ansible_check_mode | bool)
             - container_cli == 'podman'
             - not container_healthcheck_disabled
             - step|int == 5
@@ -228,6 +294,15 @@ outputs:
                 persistent: yes
                 state: yes
       external_upgrade_tasks:
+        - when: step|int == 1
+          block: &nova_online_db_migration
+            - name: Online data migration for Nova
+              command: "{{ container_cli }} exec nova_conductor nova-manage db online_data_migrations"
+              delegate_to: "{{ groups['nova_conductor'][0] }}"
+              become: true
+              tags:
+                - online_upgrade
+                - online_upgrade_nova
         - when:
             - step|int == 1
           tags:
@@ -242,21 +317,6 @@ outputs:
                 tripleo_containers_to_stop:
                   - nova_conductor
                 tripleo_delegate_to: "{{ groups['nova_conductor'] | default([]) }}"
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-          block:
-            - name: Check if nova_conductor is deployed
-              command: systemctl is-enabled --quiet openstack-nova-conductor
-              failed_when: false
-              register: nova_conductor_enabled_result
-            - name: Set fact nova_conductor_enabled
-              set_fact:
-                nova_conductor_enabled: "{{ nova_conductor_enabled_result.rc == 0 }}"
-        - name: Stop and disable nova_conductor service
-          service: name=openstack-nova-conductor state=stopped
-          when:
-            - step|int == 1
-            - release == 'rocky'
-            - nova_conductor_enabled|bool
+      external_update_tasks:
+        - when: step|int == 1
+          block: *nova_online_db_migration

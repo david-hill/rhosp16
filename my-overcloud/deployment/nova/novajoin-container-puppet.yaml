@@ -65,9 +65,9 @@ parameters:
     description: The password for messaging backend
     type: string
     hidden: true
-  RabbitUserName:
+  RpcUserName:
     default: guest
-    description: The username for RabbitMQ
+    description: The username for messaging backend
     type: string
   NovajoinIpaOtp:
     default: ''
@@ -103,7 +103,7 @@ outputs:
       config_settings:
         tripleo::profile::base::novajoin::oslomsg_rpc_password: {get_param: RpcPassword}
         tripleo::profile::base::novajoin::oslomsg_rpc_port: {get_param: RabbitClientPort}
-        tripleo::profile::base::novajoin::oslomsg_rpc_username: {get_param: RabbitUserName}
+        tripleo::profile::base::novajoin::oslomsg_rpc_username: {get_param: RpcUserName}
         tripleo::profile::base::novajoin::oslomsg_use_ssl: {get_param: RabbitClientUseSSL}
         tripleo::profile::base::novajoin::service_password: {get_param: NovajoinPassword}
         nova::metadata::novajoin::api::bind_address:
@@ -175,8 +175,18 @@ outputs:
       kolla_config:
         /var/lib/kolla/config_files/novajoin_server.json:
           command: novajoin-server --config-file /etc/novajoin/join.conf
+          config_files:
+            - source: "/var/lib/kolla/config_files/src/etc/novajoin/join.conf"
+              dest: "/etc/novajoin/"
+              merge: false
+              preserve_properties: true
         /var/lib/kolla/config_files/novajoin_notifier.json:
           command: novajoin-notify --config-file /etc/novajoin/join.conf
+          config_files:
+            - source: "/var/lib/kolla/config_files/src/etc/novajoin/join.conf"
+              dest: "/etc/novajoin/"
+              merge: false
+              preserve_properties: true
       docker_config:
         step_4:
           novajoin_server:
@@ -190,7 +200,7 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/novajoin_server.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/novajoin/etc/novajoin/join.conf:/etc/novajoin/join.conf:z
+                  - /var/lib/config-data/puppet-generated/novajoin:/var/lib/kolla/config_files/src:ro
                   - /etc/ipa/:/etc/ipa/:ro
                   - /etc/novajoin/krb5.keytab:/etc/novajoin/krb5.keytab:ro
                   - /var/log/containers/novajoin:/var/log/novajoin
@@ -208,7 +218,7 @@ outputs:
                 - {get_attr: [ContainersCommon, volumes]}
                 -
                   - /var/lib/kolla/config_files/novajoin_notifier.json:/var/lib/kolla/config_files/config.json:ro
-                  - /var/lib/config-data/novajoin/etc/novajoin/join.conf:/etc/novajoin/join.conf:Z
+                  - /var/lib/config-data/puppet-generated/novajoin:/var/lib/kolla/config_files/src:ro
                   - /etc/ipa/:/etc/ipa/:ro
                   - /etc/novajoin/krb5.keytab:/etc/novajoin/krb5.keytab:ro
                   - /var/log/containers/novajoin:/var/log/novajoin
@@ -221,8 +231,8 @@ outputs:
         # openssl-perl is installed which provides /etc/pki/CA on RHEL8
         - name: Ensure openssl-perl package is present on RHEL8
           when:
-            - ansible_os_family == 'RedHat'
-            - ansible_distribution_major_version == '8'
+            - ansible_facts['os_family'] == 'RedHat'
+            - ansible_facts['distribution_major_version'] is version('8', '==')
           package:
             name: openssl-perl
             state: present
@@ -239,6 +249,7 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode }}"
           with_items:
             - { 'path': /var/log/containers/novajoin, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
         - name: Enroll to FreeIPA
@@ -247,6 +258,6 @@ outputs:
             creates: /etc/ipa/default.conf
           when: ipa_otp != ''
         - name: Request kerberos keytab
-          shell: "/usr/bin/kinit -kt /etc/krb5.keytab && ipa-getkeytab -s $(grep xmlrpc_uri /etc/ipa/default.conf  | cut -d/ -f3) -p nova/{{ ansible_nodename }} -k /etc/novajoin/krb5.keytab"
+          shell: "/usr/bin/kinit -kt /etc/krb5.keytab && ipa-getkeytab -s $(grep xmlrpc_uri /etc/ipa/default.conf  | cut -d/ -f3) -p nova/{{ ansible_facts['nodename'] }} -k /etc/novajoin/krb5.keytab"
           args:
             creates: /etc/novajoin/krb5.keytab

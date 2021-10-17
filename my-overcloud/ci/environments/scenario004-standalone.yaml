@@ -10,6 +10,7 @@ resource_registry:
   OS::TripleO::Services::CephMon: ../../deployment/ceph-ansible/ceph-mon.yaml
   OS::TripleO::Services::CephOSD: ../../deployment/ceph-ansible/ceph-osd.yaml
   OS::TripleO::Services::CephMds: ../../deployment/ceph-ansible/ceph-mds.yaml
+  OS::TripleO::Services::CephNfs: ../../deployment/ceph-ansible/ceph-nfs.yaml
   OS::TripleO::Services::CephRgw: ../../deployment/ceph-ansible/ceph-rgw.yaml
   OS::TripleO::Services::CephClient: ../../deployment/ceph-ansible/ceph-client.yaml
   OS::TripleO::Services::SwiftProxy: OS::Heat::None
@@ -28,9 +29,6 @@ resource_registry:
   OS::TripleO::Services::MySQL: ../../deployment/database/mysql-pacemaker-puppet.yaml
   OS::TripleO::Services::LoginDefs: ../../deployment/login-defs/login-defs-baremetal.yaml
   OS::TripleO::Services::Keepalived: OS::Heat::None
-  # Some infra instances don't pass the ping test but are otherwise working.
-  # Since the OVB jobs also test this functionality we can shut it off here.
-  OS::TripleO::AllNodes::Validation: ../common/all-nodes-validation-disabled.yaml
 
 parameter_defaults:
   ManagePolling: true
@@ -54,18 +52,18 @@ parameter_defaults:
     mon_host_v1: { 'enabled': False }
     handler_health_mon_check_retries: 10
     handler_health_mon_check_delay: 20
+    delegate_fact_host: false
   #NOTE: These ID's and keys should be regenerated for
   # a production deployment. What is here is suitable for
   # developer and CI testing only.
   CephClusterFSID: '4b5c8c0a-ff60-454b-a1b4-9747aa737d19'
-  CephMonKey: 'AQC+Ox1VmEr3BxAALZejqeHj50Nj6wJDvs96OQ=='
-  CephAdminKey: 'AQDLOh1VgEp6FRAAFzT7Zw+Y9V6JJExQAsRnRQ=='
   CephClientKey: 'AQC+vYNXgDAgAhAAc8UoYt+OTz5uhV7ItLdwUw=='
+  CephRgwKey: 'AQDLOh1VgEp6FRAAFzT7Zw+Y9V6JJExQAsRnRQ=='
   CephAnsiblePlaybookVerbosity: 1
-  CephAnsibleRepo: "tripleo-centos-ceph-nautilus"
+  CephAnsibleRepo: "rhceph-4-tools-for-rhel-8-x86_64-rpms"
   CephAnsibleEnvironmentVariables:
-    ANSIBLE_SSH_RETRIES: '4'
-    DEFAULT_FORKS: '3'
+    ANSIBLE_SSH_RETRIES: 4
+    DEFAULT_FORKS: 3
   ManilaCephFSDataPoolPGNum: 16
   ManilaCephFSMetadataPoolPGNum: 16
   NovaEnableRbdBackend: true
@@ -99,3 +97,8 @@ parameter_defaults:
   ContainerCli: docker
   CephConfigOverrides:
     globalkey: globalvalue
+    anotherkey: anothervalue
+  ManilaCephFSCephFSProtocolHelperType: 'NFS'
+  # Workaround for https://bugs.launchpad.net/tripleo/+bug/1911022
+  ExtraConfig:
+    ganesha_vip: 192.168.24.3

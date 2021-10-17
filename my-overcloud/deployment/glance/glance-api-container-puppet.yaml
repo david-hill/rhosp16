@@ -100,6 +100,11 @@ parameters:
       without being accessed.
     type: number
     default: 86400
+  GlanceImagePrefetcherInterval:
+    description: >
+      The interval in seconds to run periodic job cache_images.
+    type: number
+    default: 300
   GlanceNfsShare:
     default: ''
     description: >
@@ -135,11 +140,20 @@ parameters:
       Whether to show multiple image locations e.g for copy-on-write support on
       RBD or Netapp backends. Potential security risk, see glance.conf for more information.
     type: boolean
+  # We default import plugins list to 'no_op' (instead of empty list) to discern from the scenario
+  # in which the user purposely disabled all plugins setting it to an empty list. This is useful
+  # to automatically enable image_conversion plugin only when value is left to the default.
   GlanceImageImportPlugins:
-    default: []
+    default: ['no_op']
     description: >
       List of enabled Image Import Plugins. Valid values in the list are
       'image_conversion', 'inject_metadata', 'no_op'.
+    type: comma_delimited_list
+  GlanceDiskFormats:
+    default: ''
+    description: >
+      List of allowed disk formats in Glance; all formats are allowed when
+      left unset.
     type: comma_delimited_list
   GlanceImageConversionOutputFormat:
     default: 'raw'
@@ -174,6 +188,11 @@ parameters:
     description: >
       NFS mount options for NFS image import staging
     type: string
+  GlanceSparseUploadEnabled:
+    default: false
+    description: >
+      When using GlanceBackend 'file' and 'rbd' to enable or not sparse upload.
+    type: boolean
   KeystoneRegion:
     type: string
     default: 'regionOne'
@@ -186,7 +205,7 @@ parameters:
     type: json
   NotificationDriver:
     type: string
-    default: 'messagingv2'
+    default: 'noop'
     description: Driver or drivers to handle sending notifications.
   EnableInternalTLS:
     type: boolean
@@ -240,6 +259,12 @@ parameters:
           cinder_store:
             GlanceBackend: cinder
             GlanceStoreDescription: 'Cinder store'
+  GlanceCinderMountPointBase:
+    default: '/var/lib/glance/mnt'
+    type: string
+    description: |
+      The mount point base when glance is using cinder as store and cinder backend
+      is NFS. This mount point is where the NFS volume is mounted on the glance node.
   CephClientUserName:
     default: openstack
     type: string
@@ -260,6 +285,10 @@ parameters:
     default: []
     description: list of optional volumes to be mounted
     type: comma_delimited_list
+  ContainerGlanceApiImageStein:
+    description: image
+    type: string
+    default: ''
   ContainerGlanceApiImage:
     description: image
     type: string
@@ -269,7 +298,9 @@ parameters:
 
 conditions:
 
+  fast_forward_upgrade: {not: {equals: [{get_param: ContainerGlanceApiImageStein},'']}}
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
+  glance_sparse_upload_enabled: {equals : [{get_param: GlanceSparseUploadEnabled}, true]}
   cinder_backend_enabled:
     or:
     - equals:
@@ -296,10 +327,14 @@ conditions:
           expression: $.data.values().any($.get("GlanceBackend", "") = "rbd")
           data: {get_param: GlanceMultistoreConfig}
       - true
-  enable_image_conversion:
-    and:
-      - rbd_backend_enabled
-      - equals: [{get_param: NovaEnableRbdBackend}, true]
+  force_image_conversion_plugin:
+    or:
+      - and:
+        - rbd_backend_enabled
+        - equals: [{get_param: GlanceImageImportPlugins}, ['no_op']]
+        - equals: [{get_param: NovaEnableRbdBackend}, true]
+      - glance_sparse_upload_enabled
+
   use_tls_proxy: {equals : [{get_param: EnableInternalTLS}, true]}
   glance_workers_unset: {equals : [{get_param: GlanceWorkers}, '']}
   service_debug_unset: {equals : [{get_param: GlanceDebug}, '']}
@@ -404,7 +439,7 @@ outputs:
             glance::api::node_staging_uri: {get_param: GlanceNodeStagingUri}
             glance::api::image_import_plugins:
               if:
-              - enable_image_conversion
+              - force_image_conversion_plugin
               - list_concat_unique:
                 - {get_param: GlanceImageImportPlugins}
                 - ['image_conversion']
@@ -445,6 +480,8 @@ outputs:
                     $NETWORK: {get_param: [ServiceNetMap, GlanceApiNetwork]}
             glance_notifier_strategy: {get_param: GlanceNotifierStrategy}
             glance_log_file: {get_param: GlanceLogFile}
+            glance::backend::rbd::rbd_thin_provisioning: {get_param: GlanceSparseUploadEnabled}
+            glance::backend::file::filesystem_thin_provisioning: {get_param: GlanceSparseUploadEnabled}
             glance::backend::swift::swift_store_auth_address: {get_param: [EndpointMap, KeystoneV3Internal, uri] }
             glance::backend::swift::swift_store_user: service:glance
             glance::backend::swift::swift_store_key: {get_param: GlancePassword}
@@ -475,6 +512,12 @@ outputs:
               glance::backend::cinder::cinder_store_project_name: 'service'
               glance::backend::cinder::cinder_store_user_name: 'glance'
               glance::backend::cinder::cinder_store_password: {get_param: GlancePassword}
+              tripleo::profile::base::glance::backend::cinder::cinder_mount_point_base: {get_param: GlanceCinderMountPointBase}
+            - {}
+          -
+            if:
+            - cinder_multipathd_enabled
+            - glance::backend::cinder::cinder_use_multipath: true
             - {}
           -
             if:
@@ -482,6 +525,7 @@ outputs:
             - glance::api::image_cache_dir: {get_param: GlanceImageCacheDir}
               glance::api::image_cache_max_size: {get_param: GlanceImageCacheMaxSize}
               glance::api::image_cache_stall_time: {get_param: GlanceImageCacheStallTime}
+              glance::api::cache_prefetcher_interval: {get_param: GlanceImagePrefetcherInterval}
             - {}
           -
             if:
@@ -490,6 +534,11 @@ outputs:
               glance::api::filesystem_store_metadata_file: '/etc/glance/glance-metadata-file.json'
               glance::api::filesystem_store_file_perm: '0644'
             - {}
+          -
+            if:
+            - {equals: [{get_param: GlanceDiskFormats}, []]}
+            - {}
+            - glance::api::disk_formats: {get_param: GlanceDiskFormats}
           - glance::api::sync_db: false
       service_config_settings:
         mysql:
@@ -568,48 +617,86 @@ outputs:
               dest: "/etc/httpd/conf.d"
               merge: false
               preserve_properties: true
+            - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.modules.d"
+              dest: "/etc/httpd/conf.modules.d"
+              # TODO(emilien) remove optional flag once we get a promotion
+              # https://launchpad.net/bugs/1884115
+              optional: true
+              merge: false
+              preserve_properties: true
             - source: "/var/lib/kolla/config_files/src/*"
               dest: "/"
               merge: true
               preserve_properties: true
+      container_config_scripts:
+        map_merge:
+          - {get_attr: [ContainersCommon, container_config_scripts]}
+          - glance_ffu_db_sync.sh:
+              mode: "0755"
+              content: { get_file: ../../container_config_scripts/glance_ffu_db_sync.sh }
       docker_config:
         step_2:
           get_attr: [GlanceLogging, docker_config, step_2]
         step_3:
-          glance_api_db_sync:
-            image: &glance_api_image {get_param: ContainerGlanceApiImage}
-            net: host
-            privileged: false
-            detach: false
-            user: root
-            volumes: &glance_volumes
-              list_concat:
-                - {get_attr: [ContainersCommon, volumes]}
-                - {get_attr: [GlanceLogging, volumes]}
-                - {get_param: GlanceApiOptVolumes}
-                -
-                  - /var/lib/kolla/config_files/glance_api.json:/var/lib/kolla/config_files/config.json
-                  - /var/lib/config-data/puppet-generated/glance_api:/var/lib/kolla/config_files/src:ro
-                  - /etc/ceph:/var/lib/kolla/config_files/src-ceph:ro
-                  - /var/lib/glance:/var/lib/glance:slave
-                -
-                  if:
-                    - cinder_backend_enabled
-                    - - /dev:/dev
-                      - /etc/iscsi:/etc/iscsi
-                      - /var/lib/iscsi:/var/lib/iscsi:z
-                    - []
-                -
-                  if:
-                    - cinder_multipathd_enabled
-                    - - /etc/multipath:/etc/multipath:z
-                      - /etc/multipath.conf:/etc/multipath.conf:ro
-                    - []
-            environment:
-              KOLLA_BOOTSTRAP: true
-              KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
-              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
-            command: "/usr/bin/bootstrap_host_exec glance_api su glance -s /bin/bash -c '/usr/local/bin/kolla_start'"
+          map_merge:
+            - glance_api_db_sync:
+                image: &glance_api_image {get_param: ContainerGlanceApiImage}
+                start_order: 1
+                net: host
+                privileged: false
+                detach: false
+                user: root
+                volumes: &glance_volumes
+                  list_concat:
+                    - {get_attr: [ContainersCommon, volumes]}
+                    - {get_attr: [GlanceLogging, volumes]}
+                    - {get_param: GlanceApiOptVolumes}
+                    -
+                      - /var/lib/kolla/config_files/glance_api.json:/var/lib/kolla/config_files/config.json
+                      - /var/lib/config-data/puppet-generated/glance_api:/var/lib/kolla/config_files/src:ro
+                      - /etc/ceph:/var/lib/kolla/config_files/src-ceph:ro
+                      - /var/lib/glance:/var/lib/glance:slave
+                    -
+                      if:
+                        - cinder_backend_enabled
+                        - - /dev:/dev
+                          - /etc/iscsi:/etc/iscsi
+                          - /var/lib/iscsi:/var/lib/iscsi:z
+                        - []
+                    -
+                      if:
+                        - cinder_multipathd_enabled
+                        - - /etc/multipath:/etc/multipath:z
+                          - /etc/multipath.conf:/etc/multipath.conf:ro
+                        - []
+                environment:
+                  KOLLA_BOOTSTRAP: true
+                  KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
+                  TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+                command: "/usr/bin/bootstrap_host_exec glance_api su glance -s /bin/bash -c '/usr/local/bin/kolla_start'"
+            - if:
+                - fast_forward_upgrade
+                - glance_api_db_sync_stein:
+                    start_order: 0
+                    image: {get_param: ContainerGlanceApiImageStein}
+                    net: host
+                    privileged: false
+                    detach: false
+                    user: root
+                    volumes:
+                      list_concat:
+                        - *glance_volumes
+                        -
+                          - /var/lib/container-config-scripts/:/container-config-scripts/:ro
+                    environment:
+                      KOLLA_BOOTSTRAP: true
+                      KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
+                      TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+                    command:
+                      - '/usr/bin/bootstrap_host_exec'
+                      - 'glance_api'
+                      - '/container-config-scripts/glance_ffu_db_sync.sh'
+                - {}
         step_4:
           map_merge:
             - glance_api:
@@ -626,7 +713,7 @@ outputs:
             - if:
                 - internal_tls_enabled
                 - glance_api_tls_proxy:
-                    start_order: 2
+                    start_order: 3
                     image: *glance_api_image
                     net: host
                     user: root
@@ -690,31 +777,3 @@ outputs:
                 tripleo_containers_to_stop:
                   - glance_api
                 tripleo_delegate_to: "{{ groups['glance_api'] | default([]) }}"
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-          block:
-            - name: Check if glance_api is deployed
-              command: systemctl is-enabled --quiet openstack-glance-api
-              failed_when: false
-              register: glance_api_enabled_result
-            - name: Set fact glance_api_enabled
-              set_fact:
-                glance_api_enabled: "{{ glance_api_enabled_result.rc == 0 }}"
-        - name: Stop openstack-glance-api
-          service: name=openstack-glance-api state=stopped enabled=no
-          when:
-            - step|int == 1
-            - release == 'rocky'
-            - glance_api_enabled|bool
-        - name: glance package update
-          package: name=openstack-glance state=latest
-          when:
-            - step|int == 6
-            - is_bootstrap_node|bool
-        - name: glance db sync
-          command: glance-manage db_sync
-          when:
-            - step|int == 8
-            - is_bootstrap_node|bool

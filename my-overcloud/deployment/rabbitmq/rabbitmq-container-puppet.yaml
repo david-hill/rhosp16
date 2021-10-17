@@ -93,10 +93,21 @@ parameters:
     description: >
       Setting this to a unique value will re-run any deployment tasks which
       perform configuration on a Heat stack-update.
+  CertificateKeySize:
+    type: string
+    default: '2048'
+    description: Specifies the private key size used when creating the
+                 certificate.
+  RabbitmqCertificateKeySize:
+    type: string
+    default: ''
+    description: Override the private key size used when creating the
+                 certificate for this service
 
 conditions:
 
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
+  key_size_override_unset: {equals: [{get_param: RabbitmqCertificateKeySize}, '']}
 
 resources:
 
@@ -140,11 +151,10 @@ outputs:
               NODE_PORT: ''
               NODE_IP_ADDRESS: ''
               RABBITMQ_NODENAME: "rabbit@%{::hostname}"
-              RABBITMQ_SERVER_ERL_ARGS: '"+K true +P 1048576 -kernel inet_default_connect_options [{nodelay,true}]"'
-              RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: {get_param: RabbitAdditionalErlArgs}
               RABBITMQ_CTL_DIST_PORT_MIN: '25673'
               RABBITMQ_CTL_DIST_PORT_MAX: '25683'
               'export ERL_EPMD_ADDRESS': "%{hiera('rabbitmq::interface')}"
+            tripleo::profile::base::rabbitmq::additional_erl_args: {get_param: RabbitAdditionalErlArgs}
             rabbitmq_kernel_variables:
               inet_dist_listen_min: '25672'
               inet_dist_listen_max: '25672'
@@ -206,6 +216,11 @@ outputs:
                     params:
                       NETWORK: {get_param: [ServiceNetMap, RabbitmqNetwork]}
                 postsave_cmd: "/usr/bin/certmonger-rabbitmq-refresh.sh"
+                key_size:
+                  if:
+                    - key_size_override_unset
+                    - {get_param: CertificateKeySize}
+                    - {get_param: RabbitmqCertificateKeySize}
             - {}
           - rabbitmq::admin_enable: false
             rabbitmq::management_enable: true
@@ -343,6 +358,7 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
             - { 'path': /var/log/containers/rabbitmq, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/lib/rabbitmq, 'setype': svirt_sandbox_file_t }

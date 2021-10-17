@@ -4,6 +4,10 @@ description: >
   OpenStack containerized Ironic API service
 
 parameters:
+  ContainerIronicApiImageStein:
+    description: image
+    type: string
+    default: ''
   ContainerIronicApiImage:
     description: image
     type: string
@@ -69,6 +73,7 @@ parameters:
     default: false
 
 conditions:
+  fast_forward_upgrade: {not: {equals: [{get_param: ContainerIronicApiImageStein},'']}}
   internal_tls_enabled: {equals: [{get_param: EnableInternalTLS}, true]}
   cors_allowed_origin_unset: {equals : [{get_param: IronicCorsAllowedOrigin}, '']}
 
@@ -206,6 +211,13 @@ outputs:
               dest: "/etc/httpd/conf.d"
               merge: false
               preserve_properties: true
+            - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.modules.d"
+              dest: "/etc/httpd/conf.modules.d"
+              # TODO(emilien) remove optional flag once we get a promotion
+              # https://launchpad.net/bugs/1884115
+              optional: true
+              merge: false
+              preserve_properties: true
             - source: "/var/lib/kolla/config_files/src/*"
               dest: "/"
               merge: true
@@ -227,24 +239,50 @@ outputs:
               - /var/log/containers/httpd/ironic-api:/var/log/httpd:z
             command: ['/bin/bash', '-c', 'chown -R ironic:ironic /var/log/ironic']
         step_3:
-          ironic_db_sync:
-            start_order: 1
-            image: *ironic_api_image
-            net: host
-            privileged: false
-            detach: false
-            user: root
-            volumes:
-              list_concat:
-                - {get_attr: [ContainersCommon, volumes]}
-                -
-                  - /var/lib/config-data/ironic_api/etc/ironic:/etc/ironic:ro
-                  - /var/log/containers/ironic:/var/log/ironic:z
-                  - /var/log/containers/httpd/ironic-api:/var/log/httpd:z
-                  - /var/lib/config-data/ironic_api/etc/my.cnf.d/tripleo.cnf:/etc/my.cnf.d/tripleo.cnf:ro
-            command: "/usr/bin/bootstrap_host_exec ironic_api su ironic -s /bin/bash -c 'ironic-dbsync --config-file /etc/ironic/ironic.conf'"
-            environment:
-              TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+          map_merge:
+            - ironic_db_sync:
+                start_order: 2
+                image: *ironic_api_image
+                net: host
+                privileged: false
+                detach: false
+                user: root
+                volumes: &ironic_api_volumes
+                  list_concat:
+                    - {get_attr: [ContainersCommon, volumes]}
+                    -
+                      - /var/lib/config-data/ironic_api/etc/ironic:/etc/ironic:ro
+                      - /var/log/containers/ironic:/var/log/ironic:z
+                      - /var/log/containers/httpd/ironic-api:/var/log/httpd:z
+                      - /var/lib/config-data/ironic_api/etc/my.cnf.d/tripleo.cnf:/etc/my.cnf.d/tripleo.cnf:ro
+                command: "/usr/bin/bootstrap_host_exec ironic_api su ironic -s /bin/bash -c 'ironic-dbsync --config-file /etc/ironic/ironic.conf'"
+                environment:
+                  TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+            - if:
+                - fast_forward_upgrade
+                - ironic_db_sync_stein:
+                    start_order: 2
+                    image: &ironic_api_image_stein {get_param: ContainerIronicApiImageStein}
+                    net: host
+                    privileged: false
+                    detach: false
+                    user: root
+                    volumes: *ironic_api_volumes
+                    command: "/usr/bin/bootstrap_host_exec ironic_api su ironic -s /bin/bash -c 'ironic-dbsync --config-file /etc/ironic/ironic.conf'"
+                    environment:
+                      TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+                  ironic_online_data_migrations_stein:
+                    start_order: 2
+                    image: *ironic_api_image_stein
+                    net: host
+                    privileged: false
+                    detach: false
+                    user: root
+                    volumes: *ironic_api_volumes
+                    command: "/usr/bin/bootstrap_host_exec ironic_api su ironic -s /bin/bash -c 'ironic-dbsync --config-file /etc/ironic/ironic.conf online_data_migrations'"
+                    environment:
+                      TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
+                - {}
         step_4:
           ironic_api:
             start_order: 10
@@ -278,12 +316,13 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
             - { 'path': /var/log/containers/ironic, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/log/containers/httpd/ironic-api, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
       external_upgrade_tasks:
         - when: step|int == 1
-          block:
+          block: &ironic_online_db_migration
             - name: Online data migration for Ironic
               command: "{{ container_cli }} exec ironic_api ironic-dbsync --config-file /etc/ironic/ironic.conf online_data_migrations"
               delegate_to: "{{ groups['ironic_api'][0] }}"
@@ -291,39 +330,20 @@ outputs:
               tags:
                 - online_upgrade
                 - online_upgrade_ironic
-      fast_forward_upgrade_tasks:
         - when:
-            - step|int == 0
-            - release == 'rocky'
-          block:
-            - name: Check if ironic_api is deployed
-              command: systemctl is-enabled --quiet openstack-ironic-api
-              failed_when: false
-              register: ironic_api_enabled_result
-            - name: Set fact ironic_api_enabled
-              set_fact:
-                ironic_api_enabled: "{{ ironic_api_enabled_result.rc == 0 }}"
-        - name: Stop openstack-ironic-api
-          service: name=openstack-ironic-api state=stopped enabled=no
-          when:
             - step|int == 1
-            - release == 'rocky'
-            - ironic_api_enabled|bool
-        - name: Ironic package update
-          package:
-            name: 'openstack-ironic*'
-            state: latest
-          when:
-            - step|int == 6
-            - is_bootstrap_node|bool
-        - name: Synchronize the database
-          command: ironic-dbsync --config-file /etc/ironic/ironic.conf upgrade
-          when:
-            - step|int == 8
-            - is_bootstrap_node|bool
-        - name: Do online data migration
-          command: ironic-dbsync --config-file /etc/ironic/ironic.conf online_data_migrations
-          when:
-            - step|int == 8
-            - is_bootstrap_node|bool
-            - release == 'stein'
+          tags:
+            - never
+            - system_upgrade_transfer_data
+            - system_upgrade_stop_services
+          block:
+            - name: Stop ironic api container
+              import_role:
+                name: tripleo-container-stop
+              vars:
+                tripleo_containers_to_stop:
+                  - ironic_api
+                tripleo_delegate_to: "{{ groups['ironic_api'] | default([]) }}"
+      external_update_tasks:
+        - when: step|int == 1
+          block: *ironic_online_db_migration

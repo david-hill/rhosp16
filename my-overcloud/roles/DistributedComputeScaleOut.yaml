@@ -3,7 +3,7 @@
 ###############################################################################
 - name: DistributedComputeScaleOut
   description: |
-    Distributed Compute Node role with Cinder volume and HaProxy for Glance.
+    Distributed Compute Node role with HAproxy for Glance.
   CountDefault: 1
   networks:
     InternalApi:
@@ -18,6 +18,7 @@
   ServicesDefault:
     - OS::TripleO::Services::Aide
     - OS::TripleO::Services::AuditD
+    - OS::TripleO::Services::BarbicanClient
     - OS::TripleO::Services::BootParams
     - OS::TripleO::Services::CACerts
     - OS::TripleO::Services::CephClient
@@ -30,7 +31,6 @@
     - OS::TripleO::Services::ComputeNeutronMetadataAgent
     - OS::TripleO::Services::ComputeNeutronOvsAgent
     - OS::TripleO::Services::Docker
-    - OS::TripleO::Services::Etcd
     - OS::TripleO::Services::HAproxyEdge
     - OS::TripleO::Services::IpaClient
     - OS::TripleO::Services::Ipsec
@@ -54,7 +54,6 @@
     - OS::TripleO::Services::Rsyslog
     - OS::TripleO::Services::RsyslogSidecar
     - OS::TripleO::Services::Securetty
-    - OS::TripleO::Services::SkydiveAgent
     - OS::TripleO::Services::Snmp
     - OS::TripleO::Services::Sshd
     - OS::TripleO::Services::Timesync

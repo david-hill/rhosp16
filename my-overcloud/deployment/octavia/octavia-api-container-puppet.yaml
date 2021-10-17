@@ -186,7 +186,7 @@ outputs:
                   "%{hiera('$NETWORK')}"
                 params:
                   $NETWORK: {get_param: [ServiceNetMap, OctaviaApiNetwork]}
-            octavia::wsgi::apache::server_name:
+            octavia::wsgi::apache::servername:
               str_replace:
                 template:
                   "%{hiera('fqdn_$NETWORK')}"
@@ -251,6 +251,13 @@ outputs:
                   dest: "/etc/httpd/conf.d"
                   merge: false
                   preserve_properties: true
+                - source: "/var/lib/kolla/config_files/src/etc/httpd/conf.modules.d"
+                  dest: "/etc/httpd/conf.modules.d"
+                  # TODO(emilien) remove optional flag once we get a promotion
+                  # https://launchpad.net/bugs/1884115
+                  optional: true
+                  merge: false
+                  preserve_properties: true
                 - source: "/var/lib/kolla/config_files/src/*"
                   dest: "/"
                   merge: true
@@ -260,6 +267,9 @@ outputs:
             list_concat:
               -
                 - path: /var/log/octavia
+                  owner: octavia:octavia
+                  recurse: true
+                - path: /run/octavia
                   owner: octavia:octavia
                   recurse: true
               - {get_attr: [OctaviaProviderConfig, role_data, kolla_permissions]}
@@ -272,6 +282,9 @@ outputs:
               preserve_properties: true
           permissions:
             - path: /var/log/octavia
+              owner: octavia:octavia
+              recurse: true
+            - path: /run/octavia
               owner: octavia:octavia
               recurse: true
       container_puppet_tasks:
@@ -378,6 +391,7 @@ outputs:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
             - { 'path': /var/log/containers/octavia, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
             - { 'path': /var/log/containers/httpd/octavia-api, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
@@ -401,21 +415,27 @@ outputs:
                 name: octavia_api_tls_proxy
                 state: absent
               when: container_cli == 'docker'
-            - name: stop and disable octavia_api_tls_proxy container if podman
-              systemd:
-                name: tripleo_octavia_api_tls_proxy
-                state: stopped
-                enabled: no
-              when: container_cli == 'podman'
-            - name: clean up tripleo service file for octavia_api_tls_proxy
-              file:
-                state: absent
-                path: "/etc/systemd/system/tripleo_octavia_api_tls_proxy"
-              when: container_cli == 'podman'
-            - name: reload systemd
-              systemd:
-                daemon-reload: yes
-              when: container_cli == 'podman'
+            - name: "check if tripleo_octavia_api_tls_proxy service exists in systemd"
+              stat:
+                path: "/etc/systemd/system/tripleo_octavia_api_tls_proxy.service"
+              register: systemd_exists
+            - name: Remove tripleo_octavia_api_tls_proxy service
+              when:
+                - container_cli == 'podman'
+                - systemd_exists.stat.exists
+              block:
+                - name: stop and disable octavia_api_tls_proxy container
+                  systemd:
+                    name: tripleo_octavia_api_tls_proxy
+                    state: stopped
+                    enabled: no
+                - name: clean up tripleo service file for octavia_api_tls_proxy
+                  file:
+                    state: absent
+                    path: "/etc/systemd/system/tripleo_octavia_api_tls_proxy.service"
+                - name: reload systemd
+                  systemd:
+                    daemon-reload: yes
       upgrade_tasks:
         - name: Set internal tls variable
           set_fact:
@@ -425,3 +445,18 @@ outputs:
             - step|int == 2
             - internal_tls_enabled|bool
           block: *remove_octavia_tls_proxy_tasks
+      external_upgrade_tasks:
+        - when:
+            - step|int == 1
+          tags:
+            - never
+            - system_upgrade_transfer_data
+            - system_upgrade_stop_services
+          block:
+            - name: Stop octavia api container
+              import_role:
+                name: tripleo-container-stop
+              vars:
+                tripleo_containers_to_stop:
+                  - octavia_api
+                tripleo_delegate_to: "{{ groups['octavia_api'] | default([]) }}"

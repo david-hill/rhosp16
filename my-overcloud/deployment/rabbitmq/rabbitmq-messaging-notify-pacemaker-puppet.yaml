@@ -192,7 +192,7 @@ outputs:
                       - {get_param: RabbitCookie}
                       - {get_param: [DefaultPasswords, rabbit_cookie]}
         step_2:
-          rabbitmq_init_bundle:
+          rabbitmq_wait_bundle:
             start_order: 0
             detach: false
             net: host
@@ -202,8 +202,8 @@ outputs:
               list_concat:
                 - - '/container_puppet_apply.sh'
                   - '2'
-                  - 'file,file_line,concat,augeas,pacemaker::resource::bundle,pacemaker::property,pacemaker::resource::ocf,pacemaker::constraint::order,pacemaker::constraint::colocation,rabbitmq_policy,rabbitmq_user,rabbitmq_ready'
-                  - 'include ::tripleo::profile::base::pacemaker;include ::tripleo::profile::pacemaker::rabbitmq_bundle'
+                  - 'file,file_line,concat,augeas,rabbitmq_policy,rabbitmq_user,rabbitmq_ready'
+                  - 'include tripleo::profile::pacemaker::rabbitmq_bundle'
                 - if:
                   - puppet_debug_enabled
                   - - '--debug'
@@ -224,27 +224,13 @@ outputs:
               # NOTE: this should force this container to re-run on each
               # update (scale-out, etc.)
               TRIPLEO_DEPLOY_IDENTIFIER: {get_param: DeployIdentifier}
-          rabbitmq_restart_bundle:
-            start_order: 1
-            config_volume: rabbitmq
-            detach: false
-            net: host
-            ipc: host
-            user: root
-            environment:
-              TRIPLEO_MINOR_UPDATE: ''
-            command: /pacemaker_restart_bundle.sh oslo_messaging_notify rabbitmq rabbitmq-bundle Started
-            image: {get_param: ContainerRabbitmqImage}
-            volumes:
-              list_concat:
-                - {get_attr: [ContainersCommon, pacemaker_restart_volumes]}
-                - - /var/lib/config-data/puppet-generated/rabbitmq:/var/lib/kolla/config_files/src:ro
       host_prep_tasks:
         - name: create persistent directories
           file:
             path: "{{ item.path }}"
             state: directory
             setype: "{{ item.setype }}"
+            mode: "{{ item.mode|default(omit) }}"
           with_items:
             - { 'path': /var/lib/rabbitmq, 'setype': svirt_sandbox_file_t }
             - { 'path': /var/log/containers/rabbitmq, 'setype': svirt_sandbox_file_t, 'mode': '0750' }
@@ -263,6 +249,21 @@ outputs:
           vars:
             container_image: {get_param: ContainerRabbitmqImage}
             container_image_latest: *rabbitmq_image_pcmklatest
+        - name: RabbitMQ Notify HA Wrappers Step
+          when: step|int == 2
+          block: &oslo_messaging_notify_puppet_bundle
+            - name: RabbitMQ notify puppet bundle
+              import_role:
+                name: tripleo_ha_wrapper
+              vars:
+                tripleo_ha_wrapper_service_name: oslo_messaging_notify
+                tripleo_ha_wrapper_resource_name: rabbitmq
+                tripleo_ha_wrapper_bundle_name: rabbitmq-bundle
+                tripleo_ha_wrapper_resource_state: Started
+                tripleo_ha_wrapper_puppet_config_volume: rabbitmq
+                tripleo_ha_wrapper_puppet_execute: '["Rabbitmq_policy", "Rabbitmq_user"].each |String $val| { noop_resource($val) }; include ::tripleo::profile::base::pacemaker; include ::tripleo::profile::pacemaker::rabbitmq_bundle'
+                tripleo_ha_wrapper_puppet_tags: 'pacemaker::resource::bundle,pacemaker::property,pacemaker::resource::ip,pacemaker::resource::ocf,pacemaker::constraint::order,pacemaker::constraint::colocation'
+                tripleo_ha_wrapper_puppet_debug: {get_param: ConfigDebug}
 
       update_tasks:
         - name: Rabbit fetch and retag container image for pacemaker
@@ -274,6 +275,10 @@ outputs:
                 rabbitmq_image_latest: *rabbitmq_image_pcmklatest
             - name: Pull latest rabbitmq images
               command: "{{container_cli}} pull {{rabbitmq_image}}"
+              register: result
+              retries: 3
+              delay: 3
+              until: result.rc == 0
             - name: Get previous rabbitmq image id
               shell: "{{container_cli}} inspect --format '{{'{{'}}.Id{{'}}'}}' {{rabbitmq_image_latest}}"
               register: old_rabbitmq_image_id
@@ -289,6 +294,13 @@ outputs:
                 container_image_latest: "{{rabbitmq_image_latest}}"
               when:
                 - old_rabbitmq_image_id.stdout != new_rabbitmq_image_id.stdout
+
+      post_update_tasks:
+        - name: Rabbitmq notify bundle post update
+          when: step|int == 1
+          block: *oslo_messaging_notify_puppet_bundle
+          vars:
+            tripleo_ha_wrapper_minor_update: true
 
       upgrade_tasks:
         - name: Prepare switch of rabbitmq image name
@@ -323,7 +335,7 @@ outputs:
               set_fact:
                 rabbitmq_pcs_res: "{{rabbitmq_pcs_res_result.rc == 0}}"
             - name: set is_notify_rabbitmq_bootstrap_node fact
-              set_fact: is_notify_rabbitmq_bootstrap_node={{oslo_messaging_notify_short_bootstrap_node_name|lower == ansible_hostname|lower}}
+              set_fact: is_notify_rabbitmq_bootstrap_node={{oslo_messaging_notify_short_bootstrap_node_name|lower == ansible_facts['hostname']|lower}}
         - name: Update rabbitmq-bundle pcs resource bundle for new container image
           when:
             - step|int == 1
@@ -362,6 +374,7 @@ outputs:
         - name: Create hiera data to upgrade oslo messaging notify in a stepwise manner.
           when:
             - step|int == 1
+            - cluster_recreate|bool
           block:
             - name: set oslo_messaging_notify upgrade node facts in a single-node environment
               set_fact:
@@ -376,7 +389,7 @@ outputs:
                 cacheable: no
               when:
                 - groups['oslo_messaging_notify'] | length > 1
-                - item.split('.')[0] in ansible_limit.split(',')
+                - item.split('.')[0] in ansible_limit.split(':')
               loop: "{{ oslo_messaging_notify_node_names }}"
             - fail:
                 msg: >
@@ -395,7 +408,7 @@ outputs:
                 name: tripleo-container-rm
               vars:
                 tripleo_containers_to_rm:
-                  - rabbitmq_init_bundle
+                  - rabbitmq_wait_bundle
               when:
                 - oslo_messaging_notify_short_node_names_upgraded | length > 1
             - name: add the oslo_messaging_notify short name to hiera data for the upgrade.
@@ -426,33 +439,3 @@ outputs:
           when:
             - step|int == 3
           block: *rabbitmq_fetch_retag_container_tasks
-
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-            - is_bootstrap_node|bool
-          block:
-            - name: Check cluster resource status of rabbitmq
-              pacemaker_resource:
-                resource: {get_attr: [RabbitmqBase, role_data, service_name]}
-                state: show
-                check_mode: false
-              failed_when: false
-              register: rabbitmq_res_result
-            - name: Set fact rabbitmq_res
-              set_fact:
-                rabbitmq_res: "{{ rabbitmq_res_result.rc == 0 }}"
-        - name: Disable the rabbitmq cluster resource
-          pacemaker_resource:
-            resource:  {get_attr: [RabbitmqBase, role_data, service_name]}
-            state: disable
-            wait_for_resource: true
-          register: rabbitmq_output
-          retries: 5
-          until: rabbitmq_output.rc == 0
-          when:
-            - step|int == 2
-            - release == 'rocky'
-            - is_bootstrap_node|bool
-            - rabbitmq_res|bool

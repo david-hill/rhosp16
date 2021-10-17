@@ -54,12 +54,6 @@ parameters:
     default: 2022
     description: Target port for migration over ssh
     type: number
-  NovaNfsEnabled:
-    default: false
-    description: Whether to enable or not the NFS backend for Nova
-    type: boolean
-    tags:
-      - role_specific
 
 resources:
 
@@ -74,14 +68,6 @@ resources:
       DefaultPasswords: {get_param: DefaultPasswords}
       RoleName: {get_param: RoleName}
       RoleParameters: {get_param: RoleParameters}
-
-conditions:
-  nova_nfs_enabled:
-    or:
-      - and:
-        - equals: [{get_param: NovaNfsEnabled}, true]
-        - equals: [{get_param: [RoleParameters, NovaNfsEnabled]}, '']
-      - equals: [{get_param: [RoleParameters, NovaNfsEnabled]}, true]
 
 outputs:
   role_data:
@@ -101,13 +87,7 @@ outputs:
                 template:
                   "%{hiera('$NETWORK')}"
                 params:
-                  $NETWORK:
-                    get_param:
-                      - ServiceNetMap
-                      - str_replace:
-                          template: "ROLENAMEHostnameResolveNetwork"
-                          params:
-                            ROLENAME: {get_param: RoleName}
+                  $NETWORK: {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
             cold_migration_ssh_inbound_addr:
               str_replace:
                 template:
@@ -117,9 +97,33 @@ outputs:
             tripleo::profile::base::sshd::port:
               - 22
             tripleo::nova_migration_target::firewall_rules:
-              '113 nova_migration_target':
-                dport:
-                  - {get_param: MigrationSshPort}
+              map_merge:
+                - map_merge:
+                    repeat:
+                      for_each:
+                        <%net_cidr%>:
+                          get_param:
+                            - ServiceData
+                            - net_cidr_map
+                            - {get_param: [ServiceNetMap, NovaLibvirtNetwork]}
+                      template:
+                        '113 nova_migration_target accept libvirt subnet <%net_cidr%>':
+                          source: <%net_cidr%>
+                          proto: 'tcp'
+                          dport: {get_param: MigrationSshPort}
+                - map_merge:
+                    repeat:
+                      for_each:
+                        <%net_cidr%>:
+                          get_param:
+                            - ServiceData
+                            - net_cidr_map
+                            - {get_param: [ServiceNetMap, NovaApiNetwork]}
+                      template:
+                        '113 nova_migration_target accept api subnet <%net_cidr%>':
+                          source: <%net_cidr%>
+                          proto: 'tcp'
+                          dport: {get_param: MigrationSshPort}
       puppet_config:
         config_volume: nova_libvirt
         step_config:
@@ -144,6 +148,21 @@ outputs:
               dest: /etc/ssh/
               owner: "root"
               perm: "0600"
+      host_prep_tasks:
+        # Let's use loop here even for one item, maybe we'll need some more
+        # directories later.
+        - name: Create libvirt persistent data directories
+          file:
+            path: "{{ item.path }}"
+            state: directory
+            setype: "{{ item.setype }}"
+          loop:
+            - { 'path': /var/run/libvirt, 'setype': virt_var_run_t }
+        - name: ensure /var/run/libvirt is present upon reboot
+          copy:
+            dest: /etc/tmpfiles.d/var-run-libvirt.conf
+            content: |
+              d /var/run/libvirt 0755 root root - -
       docker_config:
         step_4:
           nova_migration_target:
@@ -161,13 +180,14 @@ outputs:
                   - /var/lib/kolla/config_files/nova-migration-target.json:/var/lib/kolla/config_files/config.json:ro
                   - /var/lib/config-data/puppet-generated/nova_libvirt:/var/lib/kolla/config_files/src:ro
                   - /etc/ssh/:/host-ssh/:ro
-                  - /run/libvirt:/run/libvirt
+                  - /var/run/libvirt:/var/run/libvirt:shared,z
                   - /var/lib/nova:/var/lib/nova:shared
             environment:
               KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
       deploy_steps_tasks:
         - name: validate nova migration target container state
           when:
+            - not (ansible_check_mode | bool)
             - container_cli == 'podman'
             - not container_healthcheck_disabled
             - step|int == 5

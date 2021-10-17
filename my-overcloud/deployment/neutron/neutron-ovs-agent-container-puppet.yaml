@@ -55,10 +55,16 @@ parameters:
     type: boolean
     default: true
     description: Whether containerized puppet executions use modules from the baremetal host. Defaults to true. Can be set to false to consume puppet modules from containers directly.
+  DockerInsecureRegistryAddress:
+    description: Optional. The IP Address and Port of an insecure docker
+                 namespace that will be configured in /etc/sysconfig/docker.
+                 The value can be multiple addresses separated by commas.
+    type: comma_delimited_list
+    default: []
   PythonInterpreter:
     type: string
     description: The python interpreter to use for python and ansible actions
-    default: /usr/bin/python
+    default: "$(command -v python3 || command -v python)"
   NeutronEnableL2Pop:
     type: string
     description: Enable/disable the L2 population feature in the Neutron agents.
@@ -129,8 +135,23 @@ parameters:
     description: |
       Set additional ethertypes to to be configured on neutron firewalls.
     type: comma_delimited_list
+  NeutronEnableIgmpSnooping:
+    description: Enable IGMP Snooping.
+    type: boolean
+    default: false
+  NeutronOvsResourceProviderBandwidths:
+    description: >
+      Comma-separated list of <bridge>:<egress_bw>:<ingress_bw> tuples, showing
+      the available bandwidth for the given bridge in the given direction. The
+      direction is meant from VM perspective. Bandwidth is measured in kilobits
+      per second (kbps). The bridge must appear in bridge_mappings as the value.
+    type: comma_delimited_list
+    default: ""
+    tags:
+     - role_specific
 
 conditions:
+  insecure_registry_is_empty: {equals : [{get_param: DockerInsecureRegistryAddress}, []]}
   no_firewall_driver: {equals : [{get_param: NeutronOVSFirewallDriver}, '']}
   docker_puppet_mount_host: {equals: [{get_param: DockerPuppetMountHostPuppet}, true]}
   neutron_dvr_unset: {equals : [{get_param: NeutronEnableDVR}, '']}
@@ -153,11 +174,13 @@ resources:
             - neutron::agents::ml2::ovs::bridge_mappings: NeutronBridgeMappings
               vswitch::ovs::enable_hw_offload: OvsHwOffload
               vswitch::ovs::disable_emc: OvsDisableEMC
+              neutron::agents::ml2::ovs::resource_provider_bandwidths: NeutronOvsResourceProviderBandwidths
             - values: {get_param: [RoleParameters]}
           - values:
               NeutronBridgeMappings: {get_param: NeutronBridgeMappings}
               OvsHwOffload: {get_param: OvsHwOffload}
               OvsDisableEMC: {get_param: OvsDisableEMC}
+              NeutronOvsResourceProviderBandwidths: {get_param: NeutronOvsResourceProviderBandwidths}
 
   NeutronBase:
     type: ./neutron-base.yaml
@@ -190,6 +213,7 @@ outputs:
             neutron::agents::ml2::ovs::tunnel_types: {get_param: NeutronTunnelTypes}
             neutron::agents::ml2::ovs::extensions: {get_param: NeutronAgentExtensions}
             neutron::agents::ml2::ovs::tunnel_csum: {get_param: NeutronOVSTunnelCsum}
+            neutron::agents::ml2::ovs::igmp_snooping_enable: {get_param: NeutronEnableIgmpSnooping}
             # NOTE: bind IP is found in hiera replacing the network name with the
             # local node IP for the given network; replacement examples
             # (eg. for internal_api):
@@ -234,8 +258,8 @@ outputs:
               tripleo.collectd.plugins.neutron_ovs_agent:
                 - ovs_events
                 - ovs_stats
-              collectd::plugin::ovs_events::socket: '/var/run/openvswitch/db.sock'
-              collectd::plugin::ovs_stats::socket: '/var/run/openvswitch/db.sock'
+              collectd::plugin::ovs_events::socket: '/run/openvswitch/db.sock'
+              collectd::plugin::ovs_stats::socket: '/run/openvswitch/db.sock'
       puppet_config:
         config_volume: neutron
         puppet_tags: neutron_config,neutron_agent_ovs,neutron_plugin_ml2
@@ -302,7 +326,6 @@ outputs:
                   - /var/lib/config-data/puppet-generated/neutron:/var/lib/kolla/config_files/src:ro
                   - /lib/modules:/lib/modules:ro
                   - /run/openvswitch:/run/openvswitch:shared,z
-                  - /var/run/openvswitch/:/var/run/openvswitch/:shared,z
                   -
                     if:
                       - docker_puppet_mount_host
@@ -389,21 +412,90 @@ outputs:
                       regexp=".*neutron-"
                       state=absent
           when: step|int == 5
-      fast_forward_upgrade_tasks:
-        - when:
-            - step|int == 0
-            - release == 'rocky'
-          block:
-            - name: Check if neutron_ovs_agent is deployed
-              command: systemctl is-enabled --quiet neutron-openvswitch-agent
-              failed_when: false
-              register: neutron_ovs_agent_enabled_result
-            - name: Set fact neutron_ovs_agent_enabled
-              set_fact:
-                neutron_ovs_agent_enabled: "{{ neutron_ovs_agent_enabled_result.rc == 0 }}"
-        - name: Stop neutron_openvswitch_agent
-          service: name=neutron-openvswitch-agent state=stopped enabled=no
+      upgrade_tasks:
+        # nova_hybrid_state
+        - name: Gather missing facts
+          setup:
+            gather_subset: "distribution"
+          when: >-
+            ansible_facts['distribution'] is not defined or
+            ansible_facts['distribution_major_version'] is not defined
+          tags:
+            - never
+            - nova_hybrid_state
+        - name: Switch ovs-agent to hybrid state
+          vars:
+            neutron_ovs_image: {get_param: ContainerOpenvswitchImage}
+          tags:
+            - never
+            - nova_hybrid_state
           when:
-            - step|int == 1
-            - release == 'rocky'
-            - neutron_ovs_agent_enabled|bool
+            - step|int == 0
+            - ansible_facts['distribution'] == 'RedHat'
+            - ansible_facts['distribution_major_version'] is version('7', '==')
+          block:
+            - name: Check if neutron_ovs is running with proper image
+              shell: |
+                docker ps | grep "{{neutron_ovs_image}}"
+              failed_when: false
+              register: hybrid_neutron_ovs
+            - name: Implement the hybrid state for neutron_ovs_agent
+              when: hybrid_neutron_ovs.rc != 0
+              block:
+                - name: Make list of host iptables bits that we want to bindmount
+                  shell: |
+                    rpm -ql iptables | awk '!/\/usr\/share|\/lib64\/xtables|sysconfig/ {print "\"" $1 ":" $1 "\","}'
+                  register: iptables_bits
+                - name: Update the neutron_ovs_agent paunch image in config
+                  shell: |
+                    set -o pipefail
+                    jq '.neutron_ovs_agent.image = "{{ neutron_ovs_image }}" |
+                        .neutron_ovs_agent.volumes +=
+                         [{{ iptables_bits.stdout }}
+                          "/usr/lib64/xtables:/usr/lib64/xtables" ] |
+                        {"neutron_ovs_agent": .neutron_ovs_agent }' \
+                    /var/lib/tripleo-config/docker-container-startup-config-step_4.json >\
+                    /var/lib/tripleo-config/docker-container-hybrid_neutron_ovs.json
+                - name: Make sure the Undercloud hostname is included in /etc/hosts
+                  when:
+                    - undercloud_hosts_entries is defined
+                  lineinfile:
+                    dest: /etc/hosts
+                    line: "{{ undercloud_hosts_entries | join('') }}"
+                    state: present
+                - name: Set container_registry_insecure_registries fact.
+                  set_fact:
+                    container_registry_insecure_registries:
+                      if:
+                        - insecure_registry_is_empty
+                        - []
+                        - {get_param: DockerInsecureRegistryAddress}
+                - name: Set container_registry_insecure registries
+                  when: container_registry_insecure_registries != []
+                  ini_file:
+                    path: /etc/containers/registries.conf
+                    section: registries.insecure
+                    option: registries
+                    value: "{{ container_registry_insecure_registries }}"
+                  register: ini_read_result
+                - name: Restart docker
+                  when:
+                    - container_registry_insecure_registries != []
+                    - ini_read_result is changed
+                  service:
+                    name: docker
+                    state: restarted
+                - name: Remove neutron_ovs_agent container before applying new paunch config
+                  docker_container:
+                    name: neutron_ovs_agent
+                    state: absent
+                - name: Ensure neutron_ovs_agent_launcher.sh is python3
+                  replace:
+                    path: "/var/lib/docker-config-scripts/neutron_ovs_agent_launcher.sh"
+                    regexp: "python "
+                    replace: "python3 "
+                # Finally apply the paunch config to start the new neutron-ovs
+                - name: Apply paunch config for neutron_ovs
+                  shell: |
+                    paunch apply --file /var/lib/tripleo-config/docker-container-hybrid_neutron_ovs.json --config-id hybrid_neutron_ovs
+

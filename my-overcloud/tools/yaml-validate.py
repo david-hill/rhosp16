@@ -49,8 +49,6 @@ REQUIRED_DOCKER_SECTIONS = ['service_name', 'docker_config', 'puppet_config',
 OPTIONAL_DOCKER_SECTIONS = ['container_puppet_tasks', 'upgrade_tasks',
                             'deploy_steps_tasks',
                             'pre_upgrade_rolling_tasks',
-                            'fast_forward_upgrade_tasks',
-                            'fast_forward_post_upgrade_tasks',
                             'post_upgrade_tasks', 'update_tasks',
                             'post_update_tasks', 'service_config_settings',
                             'host_prep_tasks', 'metadata_settings',
@@ -62,8 +60,6 @@ OPTIONAL_DOCKER_SECTIONS = ['container_puppet_tasks', 'upgrade_tasks',
                             'external_update_tasks', 'external_upgrade_tasks']
 # ansible tasks cannot be an empty dict or ansible is unhappy
 ANSIBLE_TASKS_SECTIONS = ['upgrade_tasks', 'pre_upgrade_rolling_tasks',
-                          'fast_forward_upgrade_tasks',
-                          'fast_forward_post_upgrade_tasks',
                           'post_upgrade_tasks', 'update_tasks',
                           'post_update_tasks', 'host_prep_tasks',
                           'external_deploy_tasks',
@@ -117,6 +113,7 @@ PARAMETER_DEFINITION_EXCLUSIONS = {
     'KeystoneAdminErrorLoggingSource': ['default'],
     'KeystoneMainAcccessLoggingSource': ['default'],
     'KeystoneMainErrorLoggingSource': ['default'],
+    'LibvirtVncCACert': ['description'],
     'NeutronApiLoggingSource': ['default'],
     'NeutronDhcpAgentLoggingSource': ['default'],
     'NeutronL3AgentLoggingSource': ['default'],
@@ -158,14 +155,6 @@ PARAMETER_DEFINITION_EXCLUSIONS = {
     'BondInterfaceOvsOptions': ['description',
                                 'default',
                                 'constraints'],
-    # NOTE(anil): This is a temporary change and
-    # will be removed once bug #1767070 properly
-    # fixed. OVN supports only VLAN, geneve
-    # and flat for NeutronNetworkType. But VLAN
-    # tenant networks have a limited support
-    # in OVN. Till that is fixed, we restrict
-    # NeutronNetworkType to 'geneve'.
-    'NeutronNetworkType': ['description', 'default', 'constraints'],
     'KeyName': ['constraints'],
     'OVNSouthboundServerPort': ['description'],
     'ExternalInterfaceDefaultRoute': ['description', 'default'],
@@ -221,6 +210,10 @@ VALIDATE_DOCKER_OVERRIDE = {
   # deployment/rabbitmq/rabbitmq-messaging-notify-shared-puppet.yaml does not
   # deploy container
   './deployment/rabbitmq/rabbitmq-messaging-notify-shared-puppet.yaml': False,
+}
+VALIDATE_DOCKER_PUPPET_CONFIG_OVERRIDE = {
+    # inherits from nova-conductor
+  './deployment/nova/nova-manager-container-puppet.yaml': False,
 }
 DEPLOYMENT_RESOURCE_TYPES = [
     'OS::Heat::SoftwareDeploymentGroup',
@@ -682,7 +675,8 @@ def validate_docker_service(filename, tpl):
                           % (section_name, filename))
                     return 1
 
-        if 'puppet_config' in role_data:
+        if 'puppet_config' in role_data and \
+                VALIDATE_DOCKER_PUPPET_CONFIG_OVERRIDE.get(filename, True):
             if validate_docker_service_mysql_usage(filename, tpl):
                 print('ERROR: could not validate use of mysql service for %s.'
                       % filename)
@@ -738,16 +732,6 @@ def validate_docker_service(filename, tpl):
                 print('ERROR: upgrade_tasks validation failed')
                 return 1
 
-        if 'fast_forward_upgrade_tasks' in role_data and role_data['fast_forward_upgrade_tasks']:
-            if validate_upgrade_tasks(role_data['fast_forward_upgrade_tasks']):
-                print('ERROR: fast_forward_upgrade_tasks validation failed')
-                return 1
-
-        if 'fast_forward_post_upgrade_tasks' in role_data and role_data['fast_forward_post_upgrade_tasks']:
-            if validate_upgrade_tasks(role_data['fast_forward_post_upgrade_tasks']):
-                print('ERROR: fast_forward_post_upgrade_tasks validation failed')
-                return 1
-
     if 'parameters' in tpl:
         for param in required_params:
             if param not in tpl['parameters']:
@@ -801,16 +785,6 @@ def validate_service(filename, tpl):
             if (validate_upgrade_tasks(role_data['upgrade_tasks']) or
                 validate_upgrade_tasks_duplicate_whens(filename)):
                 print('ERROR: upgrade_tasks validation failed')
-                return 1
-
-        if 'fast_forward_upgrade_tasks' in role_data and role_data['fast_forward_upgrade_tasks']:
-            if validate_upgrade_tasks(role_data['fast_forward_upgrade_tasks']):
-                print('ERROR: fast_forward_upgrade_tasks validation failed')
-                return 1
-
-        if 'fast_forward_post_upgrade_tasks' in role_data and role_data['fast_forward_post_upgrade_tasks']:
-            if validate_upgrade_tasks(role_data['fast_forward_post_upgrade_tasks']):
-                print('ERROR: fast_forward_post_upgrade_tasks validation failed')
                 return 1
 
     if 'parameters' in tpl:
@@ -957,6 +931,10 @@ def validate_service_hiera_interpol(f, tpl):
             if not enter_lists and path[-1] != 'get_param':
                 continue
             if enter_lists and path[-1] != 0 and path[-2] != 'get_param':
+                continue
+
+            # Omit if it is not a hiera config setting
+            if path[1] in ['kolla_config']:
                 continue
 
             path_str = ';'.join(str(x) for x in path)
