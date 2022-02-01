@@ -32,7 +32,32 @@ parameters:
       guaranteed to pass through the data path of the segments in the network.
       (The parameter is automatically resolved from the ctlplane network's mtu attribute.)
     type: number
-
+  ExternalIpSubnet:
+    default: ''
+    description: IP address/subnet on the external network
+    type: string
+  ExternalInterfaceDefaultRoute:
+    default: ''
+    description: default route for the external network
+    type: string
+  ExternalInterfaceRoutes:
+    default: []
+    description: >
+      Routes for the external network traffic.
+      JSON route e.g. [{'destination':'10.0.0.0/16', 'nexthop':'10.0.0.1'}]
+      Unless the default is changed, the parameter is automatically resolved
+      from the subnet host_routes attribute.
+    type: json
+  ExternalMtu:
+    default: 1500
+    description: The maximum transmission unit (MTU) size(in bytes) that is
+      guaranteed to pass through the data path of the segments in the
+      External network.
+    type: number
+  ExternalNetworkVlanID:
+    default: 10
+    description: Vlan ID for the external network traffic.
+    type: number
   StorageIpSubnet:
     default: ''
     description: IP address/subnet on the storage network
@@ -143,9 +168,13 @@ resources:
               network_config:
               - type: interface
                 name: nic2
-                # force the MAC address of the bridge to this interface
-                primary: true
-                use_dhcp: false
+                addresses:
+                - ip_netmask:
+                    get_param: ExternalIpSubnet
+                routes:
+                - default: true
+                  next_hop:
+                    get_param: ExternalInterfaceDefaultRoute
               - type: ovs_bridge
                 name: bridge_name
                 mtu:
@@ -164,8 +193,7 @@ resources:
                 routes:
                   list_concat_unique:
                     - get_param: ControlPlaneStaticRoutes
-                    - - default: true
-                        next_hop:
+                    - - next_hop:
                           get_param: ControlPlaneDefaultRoute
                 members:
                 - type: interface
